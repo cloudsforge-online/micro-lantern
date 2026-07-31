@@ -33,6 +33,10 @@ jobs:
         LANTERN_TOKEN=ci-only-not-a-real-token-0000000000000
         IDENTITY_JWKS_URL=http://127.0.0.1:4001/.well-known/jwks.json
         IDENTITY_ISSUER=http://127.0.0.1:4001
+    secrets:
+      # @cloudsforge/* is resolved by link:../runtime, so CI checks out micro-runtime and
+      # micro-contracts as siblings — both private, so the workflow needs a contents:read token.
+      estate_token: ${{ secrets.ESTATE_READ_TOKEN }}
     permissions:
       contents: read
       packages: read
