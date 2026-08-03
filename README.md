@@ -5,6 +5,8 @@ credentials they carry, groups the occurrences into *issues*, and answers the on
 operator actually asks — "here is a request id off an error screen; what happened, and where is the
 trace?"
 
+Design authority: [`ecosystem/13-operational-model.md`](https://github.com/cloudsforge-online/micro-docs/blob/main/ecosystem/13-operational-model.md)
+
 It is a leaf. Nothing in the estate calls it, and it calls nothing at boot. Beacon failing is not a
 service failure, and neither is this one.
 
@@ -120,3 +122,10 @@ LANTERN_TEST_DATABASE_URL=postgres://lantern:lantern@127.0.0.1:5432/lantern_test
 
 Configuration is documented in `.env.example`; every value there is a `CHANGE_ME` placeholder, and
 `src/env.ts` refuses to boot on one.
+
+---
+
+## Provenance
+
+The code in this repository was written by **Claude Opus 5** and **Claude Fable 5**, under
+human direction and review.
