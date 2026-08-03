@@ -44,7 +44,7 @@ import { SECRET_KINDS } from './scrub.ts'
 import { ingest } from './ingest.ts'
 import { RUM_KINDS, RumQuota, fromWire, insertRum, type DropReason, type RumSample } from './rum.ts'
 import { listOpenIssues, openIssueCounts } from './issues.ts'
-import { eventsByRequestId, listEvents, traceForRequestId, traceUrl } from './reads.ts'
+import { eventsByRequestId, listEvents, listRumSamples, traceForRequestId, traceUrl } from './reads.ts'
 import type { SecretKind } from './scrub.ts'
 
 export interface PrincipalVerifier {
@@ -567,6 +567,24 @@ function buildRoutes(): Route[] {
         limit: clampLimit(ctx.url.searchParams.get('limit'), 100, 1000),
       })
       return { status: 200, body: { events } }
+    }),
+
+    /**
+     * The browser samples. Credentialled, unlike the sink that writes them.
+     *
+     * `rum_samples` had no reader at all: an operator could be told a frontend was reporting errors
+     * and had no way to look at one. The `attributes` bag comes back with the row because that is
+     * where a browser error's `type`, `message` and `stack` live — there are no columns for them.
+     */
+    define('GET', '/v1/rum', async (ctx, deps) => {
+      await authorise(ctx, deps)
+      const samples = await listRumSamples(deps.sql, {
+        ...paramOrUndef(ctx.url.searchParams.get('app'), 'app'),
+        ...paramOrUndef(ctx.url.searchParams.get('kind'), 'kind'),
+        ...paramOrUndef(ctx.url.searchParams.get('session'), 'session'),
+        limit: clampLimit(ctx.url.searchParams.get('limit'), 100, 1000),
+      })
+      return { status: 200, body: { samples } }
     }),
   ]
 }

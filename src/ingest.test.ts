@@ -227,6 +227,50 @@ describe('ingest', { skip }, () => {
       assert.ok(!('http.status_code' in input.attributes))
     })
   })
+
+  /* ---------------------------------------------------------------- the stored jsonb column */
+
+  /**
+   * `events.attributes` carried the SAME double-encode defect as `rum_samples.attributes`:
+   * `JSON.stringify` in `ingestEvents` on top of postgres.js's own JSON serialisation, so the
+   * column held a JSON string and `jsonb_typeof` answered 'string'.
+   *
+   * The two assertions above are on `input.attributes` — the object BEFORE the insert — and the
+   * credential sweep further up reads `attributes::text`, which contains the same substrings under
+   * either encoding and therefore passes either way. Neither could see the fault. These read the
+   * column back with jsonb operators, which is the only thing that can.
+   */
+  describe('the attribute bag is stored as jsonb, not as a string containing jsonb', () => {
+    it('stores an object whose keys the database can extract', async () => {
+      await ingest(
+        db(sql),
+        [rec({ attributes: { 'service.name': 'pay', 'db.system': 'postgres', retries: 3 } })],
+        'otlp',
+        LIMITS,
+      )
+      const rows = (await sql`
+        select jsonb_typeof(attributes)     as t,
+               attributes->>'db.system'     as db_system,
+               attributes->>'retries'       as retries,
+               coalesce((select array_agg(k order by k) from jsonb_object_keys(attributes) k), array[]::text[]) as keys
+          from events
+      `) as unknown as Array<{ t: string; db_system: string | null; retries: string | null; keys: string[] }>
+      assert.equal(rows[0]!.t, 'object')
+      assert.equal(rows[0]!.db_system, 'postgres')
+      assert.equal(rows[0]!.retries, '3')
+      // `service.name` was promoted to a column, so it must NOT be here — which is only checkable
+      // at all once the column is a walkable object.
+      assert.deepEqual(rows[0]!.keys, ['db.system', 'retries'])
+    })
+
+    it('supports the containment operator an operator would actually filter with', async () => {
+      await ingest(db(sql), [rec({ attributes: { 'service.name': 'pay', tier: 'gold' } })], 'otlp', LIMITS)
+      // `@>` on a JSON string is not an error — it simply never matches, which is how a broken
+      // encoding turns a filter into a permanently empty result set rather than a failure.
+      const hit = (await sql`select count(*)::int as n from events where attributes @> '{"tier":"gold"}'::jsonb`) as unknown as Array<{ n: number }>
+      assert.equal(hit[0]!.n, 1)
+    })
+  })
 })
 
 /* ------------------------------------------------------------------ noise generators */

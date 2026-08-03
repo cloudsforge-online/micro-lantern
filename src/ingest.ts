@@ -282,7 +282,10 @@ export async function ingestEvents(
   inputs.forEach((input, row) => {
     const base = row * EVENT_COLUMNS
     const holes = Array.from({ length: EVENT_COLUMNS }, (_unused, i) => `$${base + i + 1}`)
-    // The final column, attributes, is bound as text and cast to jsonb.
+    // The final column, attributes, is bound as an OBJECT and cast to jsonb. Not `JSON.stringify`
+    // of it: postgres.js serialises a bound object to JSON itself, so pre-stringifying makes the
+    // column hold a JSON *string* — `jsonb_typeof` returns 'string' and `attributes->>'k'` is
+    // null. The cast stays, because the inferred parameter type is json and the column is jsonb.
     holes[EVENT_COLUMNS - 1] = `${holes[EVENT_COLUMNS - 1]}::jsonb`
     tuples.push(`(${holes.join(',')})`)
     params.push(
@@ -302,7 +305,7 @@ export async function ingestEvents(
       input.errMessage,
       input.errStack,
       input.fingerprint,
-      JSON.stringify(input.attributes ?? {}),
+      input.attributes ?? {},
     )
   })
 

@@ -214,6 +214,47 @@ describe('the HTTP surface', { skip }, () => {
       assert.doesNotMatch(rows[0]!.attrs, /user-77/)
     })
 
+    /**
+     * The whole path — a browser's POST body to a column a jsonb operator can read.
+     *
+     * The case above cannot fail on the encoding: `attributes::text` renders a double-encoded bag
+     * to a string that still contains every substring it greps for, so it passed throughout the
+     * months the column held a JSON string instead of an object. This one asserts on
+     * `jsonb_typeof` and on key extraction, over HTTP, with the real `obs.ts` bag shape.
+     */
+    it('stores the attribute bag as jsonb the database can query, end to end', async () => {
+      const res = await fetch(`${app.url}/ingest/client`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://app.example' },
+        body: JSON.stringify({
+          samples: [
+            {
+              app: 'hub-web',
+              kind: 'error',
+              route: '/dashboard',
+              // Exactly what web-template's `envelope()` builds: the caller's precise classifier
+              // and the message, both of which have no column and must survive in the bag.
+              attributes: { type: 'TypeError', message: 'x is not a function', release: 'v1.2.3' },
+            },
+          ],
+        }),
+      })
+      assert.equal(res.status, 202)
+      assert.deepEqual(await res.json(), { stored: 1, dropped: 0, reasons: {} })
+      const rows = (await sql`
+        select jsonb_typeof(attributes) as t,
+               attributes->>'type'      as type,
+               attributes->>'message'   as message,
+               attributes->>'release'   as release
+          from rum_samples
+      `) as unknown as Array<{ t: string; type: string | null; message: string | null; release: string | null }>
+      assert.equal(rows.length, 1)
+      assert.equal(rows[0]!.t, 'object')
+      assert.equal(rows[0]!.type, 'TypeError')
+      assert.equal(rows[0]!.message, 'x is not a function')
+      assert.equal(rows[0]!.release, 'v1.2.3')
+    })
+
     it('refuses an origin that is not on the allowlist', async () => {
       const res = await fetch(`${app.url}/ingest/client`, {
         method: 'POST',
@@ -390,6 +431,75 @@ describe('the HTTP surface', { skip }, () => {
     it('refuses the event list without a credential', async () => {
       assert.equal((await fetch(`${app.url}/v1/events`)).status, 401)
     })
+  })
+
+  /* ---------------------------------------------------------------- the browser-sample read */
+
+  /**
+   * The other half of the double-encode defect: `rum_samples` was written and never selected, so
+   * nothing could observe what the column actually held, and an operator handed a browser error had
+   * no way to see the error's own message — `obs.ts` puts it in `attributes`, and there was no read
+   * path for `attributes` either.
+   */
+  describe('GET /v1/rum', () => {
+    it('gives an operator the browser error’s own message, decoded, not a string', async () => {
+      const post = await fetch(`${app.url}/ingest/client`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://app.example' },
+        body: JSON.stringify({
+          samples: [
+            {
+              app: 'hub-web',
+              kind: 'error',
+              route: '/orders',
+              attributes: { type: 'TypeError', message: 'cannot read properties of undefined', release: 'v9' },
+            },
+          ],
+        }),
+      })
+      assert.equal(post.status, 202)
+
+      const res = await fetch(`${app.url}/v1/rum?app=hub-web`, { headers: { 'x-lantern-token': TOKEN } })
+      assert.equal(res.status, 200)
+      const body = (await res.json()) as { samples: Array<{ app: string; kind: string; route: string | null; attributes: Record<string, unknown> }> }
+      assert.equal(body.samples.length, 1)
+      assert.equal(body.samples[0]!.kind, 'error')
+      assert.equal(body.samples[0]!.route, '/orders')
+      // An OBJECT in the JSON response. Under the double-encode this is the STRING
+      // '{"type":"TypeError",…}' and `attributes.message` is undefined — which is exactly what an
+      // operator saw: a row that says an error happened and nothing about what it was.
+      assert.equal(typeof body.samples[0]!.attributes, 'object')
+      assert.equal(body.samples[0]!.attributes['message'], 'cannot read properties of undefined')
+      assert.equal(body.samples[0]!.attributes['type'], 'TypeError')
+    })
+
+    it('filters by app, so one frontend’s noise is not another’s triage', async () => {
+      await sql`insert into rum_samples (app, kind) values ('hub-web', 'error'), ('mint-web', 'error')`
+      const res = await fetch(`${app.url}/v1/rum?app=mint-web`, { headers: { 'x-lantern-token': TOKEN } })
+      const body = (await res.json()) as { samples: Array<{ app: string }> }
+      assert.equal(body.samples.length, 1)
+      assert.equal(body.samples[0]!.app, 'mint-web')
+    })
+
+    it('refuses without a credential — the sink is open, the read is not', async () => {
+      assert.equal((await fetch(`${app.url}/v1/rum`)).status, 401)
+    })
+  })
+
+  /**
+   * The event read path carries `attributes` too. It did not, and a column no read path selects is
+   * a column nothing in the estate can find broken.
+   */
+  it('returns the event attribute bag as an object on the request-id lookup', async () => {
+    await sql`
+      insert into events (ts, service, source, severity, severity_number, msg, request_id, attributes)
+      values (now(), 'pay', 'otlp', 'error', 17, 'boom', 'k3m9p2q7r4s8t1v6', '{"db.system":"postgres"}'::jsonb)
+    `
+    const res = await fetch(`${app.url}/v1/requests/k3m9p2q7r4s8t1v6`, { headers: { 'x-lantern-token': TOKEN } })
+    assert.equal(res.status, 200)
+    const body = (await res.json()) as { events: Array<{ attributes: Record<string, unknown> }> }
+    assert.equal(body.events.length, 1)
+    assert.equal(body.events[0]!.attributes['db.system'], 'postgres')
   })
 
   /* ---------------------------------------------------------------- misc */

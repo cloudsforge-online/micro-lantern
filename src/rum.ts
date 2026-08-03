@@ -144,7 +144,12 @@ export async function insertRum(sql: Sql, samples: readonly RumSample[]): Promis
       sample.requestId,
       sample.traceId,
       sample.session,
-      JSON.stringify(sample.attributes ?? {}),
+      // The OBJECT, not `JSON.stringify` of it. postgres.js serialises a bound object to JSON
+      // itself, so pre-stringifying hands it a *string* to serialise and the column ends up
+      // holding a JSON string — `jsonb_typeof` says 'string' and `attributes->>'kind'` is null.
+      // Every attribute a browser sends is then stored and unreadable. See `attributesRoundTrip`
+      // in `rum.test.ts`, which reads the column back out of Postgres rather than trusting this.
+      sample.attributes ?? {},
     )
   })
   await sql.unsafe(
