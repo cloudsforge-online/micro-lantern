@@ -28,11 +28,47 @@ service failure, and neither is this one.
   link. Also `GET /v1/issues` (the triage list) and `GET /v1/events`.
 - **A browser RUM / client-error sink** — `POST /ingest/client`, origin-allowlisted, per-client
   quota, no credential, and **no `user_id`**: the field is never read and there is no column for it.
+  See [the browser sink contract](#the-browser-sink-contract) — a frontend that gets it wrong is
+  now told so, in a reply its own browser is allowed to read.
 - **`/livez`, `/readyz`, and an authenticated `/metrics`.** Scraping this plane costs a credential,
   because `/metrics` publishes which services are failing and how fast.
 - **Leased background work** (`src/jobs.ts`): hourly retention sweep, five-minute rollups, and
   auto-resolve of stale issues — each claimed `FOR UPDATE SKIP LOCKED`, so two replicas do the work
   once. No `setInterval`.
+
+## The browser sink contract
+
+The path is **`POST /ingest/client`**, and the body is **`{"samples":[…]}`**.
+
+This is written down because getting it wrong cost the estate every browser event it ever
+generated. All sixteen frontends ship a byte-identical `src/lib/obs.ts` that posts
+`{"events":[…]}` to `/ingest/browser` — a path this service does not serve, with an envelope it
+does not read, carrying records keyed `type` where this service requires `kind`. Three independent
+disagreements, any one of which is total data loss.
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `app` | yes | The frontend's name. A metric label, so keep it bounded. |
+| `kind` | yes | One of `page_load`, `first_contentful_paint`, `largest_contentful_paint`, `fetch_error`, `unhandled_rejection`, `error`. A CHECK constraint, not a suggestion — **not** a free-text `type`. |
+| `route` | no | The path, not the full URL. |
+| `valueMs` | no | Integer milliseconds, 0–600000. |
+| `statusCode` | no | 0–999. |
+| `requestId` | no | The `x-request-id` of the failed response. This is what joins a browser record to the server's logs. |
+| `traceId` | no | 32 lowercase hex characters, or it is dropped. |
+| `session` | no | Pseudonymous per-tab id. Never a user id. |
+| `attributes` | no | Free-form bag, scrubbed. **An error's `message` and `stack` belong here** — there is no column for them, by design. |
+
+Anything else is ignored. `userId` is not merely ignored, it is unstorable: there is no column.
+
+**Failures are answered, not swallowed.** A batch that stores nothing returns
+`{"stored":0,"dropped":N,"reasons":{…}}`, never a bare `202`. An unknown `/ingest/*` path returns a
+404 naming the paths that exist. Both replies carry CORS headers for an allowlisted origin —
+without them a browser cannot read the status at all and reports `TypeError: Failed to fetch`,
+which is indistinguishable from this service being down. That indistinguishability is precisely why
+the defect survived for months, so it is now covered by tests rather than by care.
+
+Operators: `lantern_unknown_ingest_path_total` and `lantern_rum_dropped_total` are both "someone
+believes they are reporting telemetry and are not". Neither should be nonzero for long.
 
 ## What it supersedes in `stack/infra/lantern`, and why
 

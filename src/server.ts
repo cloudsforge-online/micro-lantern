@@ -42,7 +42,7 @@ import type { Limits } from './env.ts'
 import { IngestError, decodeExport } from './otlp.ts'
 import { SECRET_KINDS } from './scrub.ts'
 import { ingest } from './ingest.ts'
-import { RUM_KINDS, RumQuota, fromWire, insertRum, type RumSample } from './rum.ts'
+import { RUM_KINDS, RumQuota, fromWire, insertRum, type DropReason, type RumSample } from './rum.ts'
 import { listOpenIssues, openIssueCounts } from './issues.ts'
 import { eventsByRequestId, listEvents, traceForRequestId, traceUrl } from './reads.ts'
 import type { SecretKind } from './scrub.ts'
@@ -117,9 +117,25 @@ export function registerServiceMetrics(metrics: Metrics): Metrics {
     })
     .register({
       name: 'lantern_rum_rejected_total',
-      help: 'RUM posts refused, by reason: origin, quota, or empty.',
+      help: 'RUM posts refused, by reason: origin, quota, envelope, or empty.',
       kind: 'counter',
       labels: ['reason'],
+    })
+    .register({
+      name: 'lantern_rum_dropped_total',
+      help:
+        'Browser samples ACCEPTED BY THE ROUTE AND THEN DISCARDED, by reason. A 2xx with this ' +
+        'number climbing is a frontend that believes it is reporting and is not — alert on it.',
+      kind: 'counter',
+      labels: ['reason'],
+    })
+    .register({
+      name: 'lantern_unknown_ingest_path_total',
+      help:
+        'Posts to an /ingest/* path this service does not serve. Nonzero means a client is ' +
+        'configured for a path that does not exist; every event it sends is being lost.',
+      kind: 'counter',
+      labels: [],
     })
 }
 
@@ -225,37 +241,130 @@ export function createServer(deps: ServerDeps): Server {
   })
 }
 
+/**
+ * The ingest paths this service actually serves. Published in the unknown-path reply below, so a
+ * misconfigured client is told the answer rather than left to guess it.
+ */
+const SERVED_INGEST_PATHS: readonly string[] = ['POST /otlp/v1/logs', 'POST /ingest/client']
+
+/**
+ * Make a refusal on a browser-facing path READABLE BY THE BROWSER.
+ *
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ * A 4xx with no `access-control-allow-origin` is not a 4xx as far as the page is concerned. The
+ * fetch rejects with a bare `TypeError: Failed to fetch` and the status, the code and the message
+ * are all unreadable — indistinguishable from the host being down. So EVERY refusal on this
+ * surface has to carry the headers, not just the happy path and not just the 404.
+ *
+ * This was found by driving a real Chrome at it. An earlier version of this very change returned a
+ * carefully worded 400 explaining the payload mismatch, and the browser could not read one byte of
+ * it: `curl` showed the explanation, Chrome showed `Failed to fetch`. A fix for an invisible
+ * failure that is itself invisible is not a fix.
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * Gated on the origin allowlist, so this explains things to a misconfigured frontend without
+ * describing the surface to anyone else.
+ */
+function readableByBrowser(reply: Reply, ctx: RequestContext, deps: ServerDeps): Reply {
+  if (!ctx.url.pathname.startsWith('/ingest/')) return reply
+  const origin = headerOf(ctx.req, 'origin')
+  if (!origin || !deps.rumOrigins.includes(origin)) return reply
+  return corsReply(reply, origin)
+}
+
 async function handle(route: Route | undefined, ctx: RequestContext, deps: ServerDeps): Promise<Reply> {
+  try {
+    return await dispatch(route, ctx, deps)
+  } catch (err) {
+    return readableByBrowser(mapFailure(err, ctx), ctx, deps)
+  }
+}
+
+async function dispatch(route: Route | undefined, ctx: RequestContext, deps: ServerDeps): Promise<Reply> {
   if (!route) {
+    // ────────────────────────────────────────────────────────────────────────────────────────
+    // WHY AN UNKNOWN /ingest/* PATH IS NOT A BARE 404.
+    //
+    // Every frontend in the estate posted browser telemetry to `/ingest/browser` for months. This
+    // service serves `/ingest/client`. Not one event arrived, and NOBODY SAW IT — because of this
+    // exact branch. A cross-origin POST that 404s with no CORS headers is not reported to the page
+    // as a 404. The browser refuses to let the script read the response at all and surfaces
+    // `net::ERR_FAILED`, which is byte-for-byte what it surfaces when the host is not there.
+    // `beacon/src/browser/driver.ts:239-248` records the resulting ambiguity: "two real causes,
+    // neither" distinguishable — a service that is not deployed, and a path that disagrees.
+    //
+    // So the fix is not merely to answer; it is to answer WHERE THE CALLER CAN HEAR IT. This reply
+    // carries the CORS headers, which is what turns an indistinguishable network failure into a
+    // readable 404 naming the paths that do exist. It answers OPTIONS the same way, because a
+    // preflight that 404s bare means the POST is never sent and the diagnosis never reached.
+    //
+    // The origin allowlist still gates it: an unrecognised origin gets the bare 404 it had before.
+    // This tells a MISCONFIGURED FRIEND what to fix; it does not map the surface for a stranger.
+    // ────────────────────────────────────────────────────────────────────────────────────────
+    if (ctx.url.pathname.startsWith('/ingest/')) {
+      deps.metrics.increment('lantern_unknown_ingest_path_total', {})
+      // Deliberately NOT labelled by path: the caller chooses that string, and a label taken from
+      // it is an unbounded-cardinality hole punched straight through to Prometheus.
+      ctx.log.warn('post to an unknown ingest path', {
+        path: ctx.url.pathname,
+        served: SERVED_INGEST_PATHS,
+        hint: 'a client is configured for a path this service does not serve',
+      })
+      const origin = headerOf(ctx.req, 'origin')
+      if (origin && deps.rumOrigins.includes(origin)) {
+        // The preflight must SUCCEED even though the path does not exist. A 404 here is a failed
+        // preflight, the browser never sends the POST, and the 404 body below — the whole
+        // diagnosis — is never fetched. Answering 204 costs nothing and is the only way the
+        // explanation reaches the page that needs it.
+        if (ctx.req.method === 'OPTIONS') return corsReply({ status: 204 }, origin)
+        return corsReply(
+          {
+            status: 404,
+            body: {
+              error: {
+                code: 'unknown_ingest_path',
+                message:
+                  `this service does not serve ${ctx.req.method} ${ctx.url.pathname}. ` +
+                  `The browser sink is POST /ingest/client.`,
+                served: SERVED_INGEST_PATHS,
+                requestId: ctx.requestId,
+              },
+            },
+          },
+          origin,
+        )
+      }
+    }
     return errorReply(404, 'not_found', `no route for ${ctx.req.method} ${ctx.url.pathname}`, ctx.requestId)
   }
-  try {
-    return await route.handle(ctx, deps)
-  } catch (err) {
-    if (err instanceof IngestError) {
-      // A refusal from the boundary. It carries the exact status the caller must answer with, and
-      // it is INFO not ERROR: a rejected oversized body is the limit working, not a fault.
-      ctx.log.info('ingest refused', { code: err.code, status: err.status })
-      return errorReply(err.status, err.code, err.message, ctx.requestId)
-    }
-    const authStatus = statusFor(err)
-    if (authStatus === 401) {
-      ctx.log.info('unauthenticated request', { err })
-      return errorReply(401, 'unauthenticated', 'a valid credential is required', ctx.requestId)
-    }
-    if (authStatus === 403) {
-      const required = err instanceof ForbiddenError ? err.required : 'unknown'
-      return errorReply(403, 'forbidden', `missing required authority: ${required}`, ctx.requestId)
-    }
-    if (authStatus === 503) {
-      ctx.log.error('token verifier unavailable', { err })
-      return errorReply(503, 'verifier_unavailable', 'authentication is temporarily unavailable', ctx.requestId)
-    }
-    if (err instanceof NotFoundError) return errorReply(404, 'not_found', err.message, ctx.requestId)
-    if (err instanceof BadRequestError) return errorReply(400, 'bad_request', err.message, ctx.requestId)
-    ctx.log.error('unhandled request failure', { err })
-    return errorReply(500, 'internal', 'the request could not be completed', ctx.requestId)
+  return await route.handle(ctx, deps)
+}
+
+/** Map a thrown failure to the reply it deserves. Split out so `handle` can post-process it. */
+function mapFailure(err: unknown, ctx: RequestContext): Reply {
+  if (err instanceof IngestError) {
+    // A refusal from the boundary. It carries the exact status the caller must answer with, and
+    // it is INFO not ERROR: a rejected oversized body is the limit working, not a fault.
+    ctx.log.info('ingest refused', { code: err.code, status: err.status })
+    return errorReply(err.status, err.code, err.message, ctx.requestId)
   }
+  const authStatus = statusFor(err)
+  if (authStatus === 401) {
+    ctx.log.info('unauthenticated request', { err })
+    return errorReply(401, 'unauthenticated', 'a valid credential is required', ctx.requestId)
+  }
+  if (authStatus === 403) {
+    const required = err instanceof ForbiddenError ? err.required : 'unknown'
+    return errorReply(403, 'forbidden', `missing required authority: ${required}`, ctx.requestId)
+  }
+  if (authStatus === 503) {
+    ctx.log.error('token verifier unavailable', { err })
+    return errorReply(503, 'verifier_unavailable', 'authentication is temporarily unavailable', ctx.requestId)
+  }
+  if (err instanceof NotFoundError) return errorReply(404, 'not_found', err.message, ctx.requestId)
+  if (err instanceof BadRequestError) return errorReply(400, 'bad_request', err.message, ctx.requestId)
+  ctx.log.error('unhandled request failure', { err })
+  return errorReply(500, 'internal', 'the request could not be completed', ctx.requestId)
 }
 
 function buildRoutes(): Route[] {
@@ -353,23 +462,65 @@ function buildRoutes(): Route[] {
       } catch {
         throw new BadRequestError('the request body is not valid JSON')
       }
+      const envelope = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null
+
+      // A body shaped `{"events":[…]}` is the frontends' `src/lib/obs.ts` posting its own envelope.
+      // Naming it beats dropping it: unwrapping it here would silently accept a payload whose
+      // records are wrong anyway (`type`, not `kind`), and a bare drop is how this hid for months.
+      if (envelope && !Array.isArray(envelope['samples']) && Array.isArray(envelope['events'])) {
+        deps.metrics.increment('lantern_rum_rejected_total', { reason: 'envelope' })
+        throw new BadRequestError(
+          'the body carries an "events" array; this sink reads "samples". Each entry needs a "kind" ' +
+            `from: ${[...RUM_KINDS].join(', ')} — not a "type".`,
+        )
+      }
+
       const wireSamples = Array.isArray(parsed)
         ? parsed
-        : typeof parsed === 'object' && parsed !== null && Array.isArray((parsed as Record<string, unknown>)['samples'])
-          ? ((parsed as Record<string, unknown>)['samples'] as unknown[])
+        : envelope && Array.isArray(envelope['samples'])
+          ? (envelope['samples'] as unknown[])
           : [parsed]
 
       const removed = new Map<SecretKind, number>()
+      const dropped = new Map<DropReason, number>()
       const samples: RumSample[] = []
       for (const wire of wireSamples.slice(0, deps.limits.maxRecords)) {
-        const sample = fromWire(wire, deps.limits, removed)
+        const sample = fromWire(wire, deps.limits, removed, dropped)
         if (sample) samples.push(sample)
       }
       const stored = await insertRum(deps.sql, samples)
       for (const sample of samples) deps.metrics.increment('lantern_rum_samples_total', { kind: sample.kind })
       recordSecrets(deps.metrics, removed)
 
-      return corsReply({ status: 202, body: { stored } }, origin)
+      // ──────────────────────────────────────────────────────────────────────────────────────
+      // A DROP IS REPORTED, NEVER SWALLOWED.
+      //
+      // This route used to answer `202 {"stored":0}` for a batch it had discarded in full. That is
+      // the worst answer available: the caller is told it succeeded, the operator sees 2xx, and the
+      // telemetry is gone. It is the same false-green that let `/ingest/browser` survive — and it
+      // would have OUTLIVED the path fix, because a corrected path posting the wrong record shape
+      // still lands here and still stores nothing.
+      //
+      // The count and reasons go in the body so a human driving `curl` sees them, and into a
+      // counter so nobody has to be driving `curl`. A batch that was dropped ENTIRELY logs at warn:
+      // that is a client which believes it is reporting and is not.
+      // ──────────────────────────────────────────────────────────────────────────────────────
+      let dropCount = 0
+      for (const [reason, count] of dropped) {
+        dropCount += count
+        deps.metrics.increment('lantern_rum_dropped_total', { reason }, count)
+      }
+      if (dropCount > 0 && stored === 0) {
+        ctx.log.warn('every sample in this batch was dropped', {
+          dropped: Object.fromEntries(dropped),
+          hint: `a "kind" must be one of: ${[...RUM_KINDS].join(', ')}`,
+        })
+      }
+
+      return corsReply(
+        { status: 202, body: { stored, dropped: dropCount, reasons: Object.fromEntries(dropped) } },
+        origin,
+      )
     }),
 
     // The preflight the browser sends before a cross-origin POST with a JSON content type.

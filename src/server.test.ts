@@ -252,6 +252,108 @@ describe('the HTTP surface', { skip }, () => {
         await off.close()
       }
     })
+
+    /**
+     * A batch that stores nothing must SAY it stored nothing and why. The prior behaviour —
+     * `202 {"stored":0}` for a wholly discarded batch — is what let sixteen frontends believe they
+     * were reporting telemetry for months.
+     */
+    it('reports what it dropped rather than answering 202 in silence', async () => {
+      const res = await fetch(`${app.url}/ingest/client`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://app.example' },
+        body: JSON.stringify({
+          samples: [
+            { app: 'hub-web', kind: 'page_load' },
+            { app: 'hub-web', kind: 'PageLoad' },
+            { kind: 'error' },
+            'not-an-object',
+          ],
+        }),
+      })
+      assert.equal(res.status, 202)
+      const body = (await res.json()) as { stored: number; dropped: number; reasons: Record<string, number> }
+      assert.equal(body.stored, 1)
+      assert.equal(body.dropped, 3)
+      assert.deepEqual(body.reasons, { unknown_kind: 1, missing_app: 1, not_an_object: 1 })
+    })
+
+    /**
+     * The estate's `src/lib/obs.ts` posts `{"events":[…]}` with a `type` per record. Naming that
+     * exact mistake is the difference between a frontend author fixing it in a minute and it
+     * surviving another quarter.
+     */
+    it('names the mismatch when the body is the frontends’ own obs.ts envelope', async () => {
+      const res = await fetch(`${app.url}/ingest/client`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://app.example' },
+        body: JSON.stringify({ events: [{ app: 'hub-web', type: 'PageLoad', message: '/x' }] }),
+      })
+      assert.equal(res.status, 400)
+      const body = (await res.json()) as { error: { message: string } }
+      assert.match(body.error.message, /"events" array/)
+      assert.match(body.error.message, /reads "samples"/)
+      assert.match(body.error.message, /page_load/)
+      // AND the browser must be able to READ it. A 400 without this header is a bare
+      // `TypeError: Failed to fetch` in the page — the very invisibility being fixed.
+      assert.equal(res.headers.get('access-control-allow-origin'), 'http://app.example')
+    })
+  })
+
+  /* ---------------------------------------------------------------- unknown ingest paths */
+
+  /**
+   * The defect this whole area exists to make impossible: a client posting to an ingest path that
+   * is not served must be TOLD, in a reply its own browser is permitted to read.
+   */
+  describe('an unknown /ingest/* path', () => {
+    it('answers a diagnosable 404 naming the paths that exist', async () => {
+      const res = await fetch(`${app.url}/ingest/browser`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://app.example' },
+        body: JSON.stringify({ events: [] }),
+      })
+      assert.equal(res.status, 404)
+      const body = (await res.json()) as { error: { code: string; message: string; served: string[] } }
+      assert.equal(body.error.code, 'unknown_ingest_path')
+      assert.match(body.error.message, /POST \/ingest\/client/)
+      assert.ok(body.error.served.includes('POST /ingest/client'))
+    })
+
+    it('carries the CORS header, without which the browser cannot read the diagnosis at all', async () => {
+      const res = await fetch(`${app.url}/ingest/browser`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://app.example' },
+        body: '{}',
+      })
+      assert.equal(res.headers.get('access-control-allow-origin'), 'http://app.example')
+    })
+
+    /**
+     * A preflight that 404s means the POST is never sent and the diagnosis above is never
+     * fetched. It has to succeed even though the path does not exist.
+     */
+    it('answers the preflight 204 so the POST that carries the diagnosis is actually sent', async () => {
+      const res = await fetch(`${app.url}/ingest/browser`, {
+        method: 'OPTIONS',
+        headers: { origin: 'http://app.example', 'access-control-request-method': 'POST' },
+      })
+      assert.equal(res.status, 204)
+      assert.equal(res.headers.get('access-control-allow-origin'), 'http://app.example')
+    })
+
+    /** Explaining the surface to a misconfigured friend, not mapping it for a stranger. */
+    it('stays a bare 404 for an origin that is not on the allowlist', async () => {
+      const res = await fetch(`${app.url}/ingest/browser`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://evil.example' },
+        body: '{}',
+      })
+      assert.equal(res.status, 404)
+      assert.equal(res.headers.get('access-control-allow-origin'), null)
+      const body = (await res.json()) as { error: { code: string } }
+      assert.equal(body.error.code, 'not_found')
+    })
   })
 
   /* ---------------------------------------------------------------- reads */

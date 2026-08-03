@@ -63,18 +63,43 @@ function hexOrNull(value: unknown, length: number): string | null {
 }
 
 /**
+ * Why a wire record was not kept.
+ *
+ * A CLOSED set, because these are metric labels and a browser chooses the input. Deriving a label
+ * from the payload — the offending `kind` string, say — would let any page mint unbounded series
+ * in the estate's Prometheus by posting junk.
+ */
+export type DropReason = 'not_an_object' | 'unknown_kind' | 'missing_app'
+
+/**
  * One wire sample to a stored sample. Returns null for a record this service will not keep — an
  * unknown `kind`, or a missing `app` — so one bad entry in a batch drops itself rather than the
  * batch. **`userId` and any other identifying field are simply never read.**
+ *
+ * `dropped` tallies the reasons, exactly as `removed` tallies redactions. It is an out-parameter
+ * rather than a return shape because the reason must survive all the way to the RESPONSE: a sink
+ * that returns null here and `202 {"stored":0}` at the boundary is a sink that discards a
+ * frontend's entire telemetry stream while telling it everything is fine. That is not a
+ * hypothetical — it is what this service did to sixteen frontends until it was driven.
  */
-export function fromWire(raw: unknown, limits: Limits, removed: Map<SecretKind, number>): RumSample | null {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+export function fromWire(
+  raw: unknown,
+  limits: Limits,
+  removed: Map<SecretKind, number>,
+  dropped?: Map<DropReason, number>,
+): RumSample | null {
+  const drop = (reason: DropReason): null => {
+    if (dropped) dropped.set(reason, (dropped.get(reason) ?? 0) + 1)
+    return null
+  }
+
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return drop('not_an_object')
   const wire = raw as Record<string, unknown>
 
   const kind = typeof wire['kind'] === 'string' ? wire['kind'] : ''
-  if (!RUM_KINDS.has(kind)) return null
+  if (!RUM_KINDS.has(kind)) return drop('unknown_kind')
   const app = stringOrNull(wire['app'], limits)
-  if (app === null) return null
+  if (app === null) return drop('missing_app')
 
   // The attribute bag is scrubbed, and `userId`/`user`/`email` are not promoted to columns and are
   // scrubbed-by-key if named sensitively; but the guarantee that matters is structural — there is
