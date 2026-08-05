@@ -17,7 +17,9 @@
  * a credential nobody notices is absent, and a warning at boot is read once, on the day it is
  * deployed, by the person who already knows.
  *
- * `LANTERN_TOKEN` is required here, has a minimum length, and refuses a known placeholder.
+ * `LANTERN_TOKEN` is required here, and its SHAPE is asserted by `@cloudsforge/secrets` rather than
+ * its length — see the block above `requiredOpaqueSecret` for why the length floor that used to
+ * stand here could not fail for the value this estate actually shipped.
  *
  * The third is `LANTERN_DOCKER_COLLECTOR`. It defaults to OFF and it refuses to turn on outside
  * `NODE_ENV=development`, because the frozen service's PRIMARY collection path is a mounted
@@ -36,6 +38,7 @@
  */
 
 import { hostname } from 'node:os'
+import { SecretError, assertOpaqueSecret } from '@cloudsforge/secrets'
 
 /**
  * The service's own name. A constant rather than a variable: it is a property of the repository,
@@ -52,17 +55,25 @@ export class EnvError extends Error {
   }
 }
 
-const PLACEHOLDERS = new Set([
-  'changeme',
-  'change-me',
-  'change_me',
-  'placeholder',
-  'secret',
-  'token',
-  'dev-secret',
-  'replace-with-a-real-secret',
-  'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-])
+/**
+ * THE `PLACEHOLDERS` SET THAT USED TO BE HERE IS GONE, AND ITS ABSENCE IS THE FIX.
+ *
+ * It held nine exact strings and was paired with a 24-character floor. Neither could fail for the
+ * value that is in `deploy/compose/docker-compose.estate.yml` on two lines TODAY:
+ * `LANTERN_TOKEN: estate-only-lantern-token-000000000000` is 38 characters and was on nobody's
+ * list. Measured out of `cloudsforge-estate-lantern-1` on 2026-08-05, so this is not a reading of
+ * the file — it is what the running container holds. Both lines are HARDCODED LITERALS rather than
+ * `${LANTERN_TOKEN:-…}` interpolations, so no deploy has ever been able to override them.
+ *
+ * A check that cannot fail is worse than no check, because the absence of an alarm gets read as the
+ * absence of a problem — and this token is the whole of the authentication on a `/metrics` surface
+ * that publishes which services are producing errors and at what rate.
+ *
+ * A deny-list of exact strings is structurally unable to work: the next placeholder somebody writes
+ * is, by definition, not on it. `@cloudsforge/secrets` asserts the SHAPE of the value instead,
+ * which is the property a placeholder cannot have. It is imported rather than copied so that this
+ * service cannot drift from the other sixteen.
+ */
 
 type Source = Readonly<Record<string, string | undefined>>
 
@@ -72,16 +83,53 @@ function required(source: Source, name: string): string {
   return value
 }
 
-function requiredSecret(source: Source, name: string, minLength = 24): string {
+/**
+ * Re-wrap the shared guard's `SecretError` as this service's `EnvError`.
+ *
+ * `loadEnv` documents a single error class for every configuration failure, and the boot path
+ * catches that one class. The message is preserved verbatim — it already names the variable and the
+ * command that fixes it, and it never contains the value.
+ */
+function asEnvError<T>(run: () => T): T {
+  try {
+    return run()
+  } catch (err) {
+    if (err instanceof SecretError) throw new EnvError(err.message)
+    throw err
+  }
+}
+
+/**
+ * A secret whose ALPHABET THIS ESTATE DOES NOT CONTROL.
+ *
+ * ── WHY `assertOpaqueSecret` AND NOT `assertGeneratedSecret` ───────────────────────────────────
+ *
+ * `assertGeneratedSecret` is the stricter rule and it is the right one for a key the estate MINTS —
+ * the event-bus HMAC key, this service's absent-by-design signing material — because the estate
+ * chooses those values with `openssl rand -base64 48` and can therefore demand the base64 or hex
+ * alphabet of them.
+ *
+ * `LANTERN_TOKEN` is not minted by anything. Nothing in `deploy/scripts/estate-bootstrap.sh` issues
+ * it; it is a static shared secret written into a compose file and into Prometheus's
+ * `http_headers: files:` block by an operator, and read back out of a runbook by the person holding
+ * the incident. That is the case `@cloudsforge/secrets` documents `assertOpaqueSecret` for in so
+ * many words — "a break-glass token typed into a runbook" — and demanding base64 of a value a
+ * human has to be able to transcribe is how a guard ends up deleted at 3am.
+ *
+ * ── IT REFUSES THE LIVE VALUE ANYWAY, WHICH IS THE ENTIRE POINT ────────────────────────────────
+ *
+ * The two rules differ on the alphabet and agree on everything that matters here. Both normalise
+ * punctuation and case away and then refuse a placeholder MARKER anywhere in the value, so
+ * `estate-only-lantern-token-000000000000` flattens to a string containing `estateonly` and is
+ * refused by either. The choice between them buys the operator a hand-set value that works; it does
+ * not buy the defect a way through.
+ *
+ * **CONSEQUENCE, STATED PLAINLY: this service will not boot on either estate until `LANTERN_TOKEN`
+ * is set to a real value.** That is the fix, not a side effect of it — see the block above.
+ */
+function requiredOpaqueSecret(source: Source, name: string): string {
   const value = required(source, name)
-  if (PLACEHOLDERS.has(value.toLowerCase())) {
-    throw new EnvError(`${name} is set to a known placeholder — generate a real secret`)
-  }
-  // Length is a proxy for entropy and the only one available here. It is set above the point at
-  // which a human-chosen string is plausible, so a memorable password fails this check too.
-  if (value.length < minLength) {
-    throw new EnvError(`${name} must be at least ${minLength} characters (got ${value.length})`)
-  }
+  asEnvError(() => assertOpaqueSecret(name, value))
   return value
 }
 
@@ -270,7 +318,7 @@ export function loadEnv(source: Source = process.env, host = ''): Env {
     identityIssuer: required(source, 'IDENTITY_ISSUER'),
     instanceId: optional(source, 'INSTANCE_ID', host || 'unknown'),
 
-    token: requiredSecret(source, 'LANTERN_TOKEN'),
+    token: requiredOpaqueSecret(source, 'LANTERN_TOKEN'),
 
     limits: {
       // Four mebibytes. The collector's default `batch` produces exports well under this, and the

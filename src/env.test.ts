@@ -4,7 +4,22 @@
  */
 
 import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
 import { describe, it } from 'node:test'
+
+/**
+ * GENERATED, NOT WRITTEN, AND THE LITERAL IT REPLACES IS WHY.
+ *
+ * Every case in this file used to be built on `'a-real-looking-secret-of-sufficient-length'`. It is
+ * hyphenated, it is a sentence describing itself, and — read the last two words —
+ * `sufficientlength` is one of the placeholder markers `@cloudsforge/secrets` refuses by name. The
+ * whole suite was asserting that a value whose own text says it exists to clear a length check is
+ * an acceptable credential for the estate's error-tracking plane.
+ *
+ * Regenerated per run rather than replaced with a better-looking literal, so a placeholder cannot
+ * creep back in the next time somebody needs a fixture.
+ */
+const TOKEN = randomBytes(48).toString('base64')
 
 /** A source that satisfies every required variable, so a case can vary exactly one thing. */
 function base(overrides: Record<string, string | undefined> = {}): Record<string, string | undefined> {
@@ -12,7 +27,7 @@ function base(overrides: Record<string, string | undefined> = {}): Record<string
     LANTERN_DATABASE_URL: 'postgres://lantern:lantern@db:5432/lantern',
     IDENTITY_JWKS_URL: 'http://identity:4001/.well-known/jwks.json',
     IDENTITY_ISSUER: 'http://identity:4001',
-    LANTERN_TOKEN: 'a-real-looking-secret-of-sufficient-length',
+    LANTERN_TOKEN: TOKEN,
     ...overrides,
   }
 }
@@ -64,13 +79,72 @@ describe('the token — the credential whose absence is a supported mode in the 
     }
   })
 
-  it('refuses a secret shorter than the minimum', () => {
-    assert.throws(() => loadEnv(base({ LANTERN_TOKEN: 'too-short' })), /at least 24 characters/)
+  /**
+   * **THE VALUE THAT IS IN THE COMPOSE FILE TODAY, PINNED AS A FAILURE.**
+   *
+   * `deploy/compose/docker-compose.estate.yml` carries
+   * `LANTERN_TOKEN: estate-only-lantern-token-000000000000` on two lines as a HARDCODED literal,
+   * and the same string was measured inside `cloudsforge-estate-lantern-1` on 2026-08-05. It is 38
+   * characters, so the 24-character floor this service used to apply could never fail for it —
+   * which is micro-org #142, and it is why the floor is gone.
+   *
+   * Quoted here because it is an already-public defect value with no secrecy left to protect, and
+   * because a test that names the exact string the estate shipped is the only kind that cannot be
+   * satisfied by a rule that happens to catch something else.
+   */
+  it('REFUSES THE VALUE THE ESTATE IS RUNNING, which is the whole of this change', () => {
+    assert.throws(
+      () => loadEnv(base({ LANTERN_TOKEN: 'estate-only-lantern-token-000000000000' })),
+      (err: unknown) =>
+        err instanceof EnvError &&
+        /LANTERN_TOKEN/.test(err.message) &&
+        /estateonly/.test(err.message) &&
+        // The message names the marker it matched, never the value it matched it in: the fatal
+        // handler writes this to stderr and the collector ships it onwards.
+        !err.message.includes('estate-only-lantern-token-000000000000'),
+    )
   })
 
-  it('accepts a real-looking secret', () => {
-    const env = loadEnv(base({ LANTERN_TOKEN: 'x'.repeat(24) }))
-    assert.equal(env.token.length, 24)
+  it('refuses a secret shorter than the minimum, and the message says how short', () => {
+    // This assertion used to demand the message say "at least 24 characters" — the keystroke floor
+    // that let a 38-character placeholder through. Pinning that wording made the test a DEFENCE of
+    // the defective rule: any fix that stopped counting to 24 would fail CI, however much better
+    // the new rule was. What it asserts now is the property that matters.
+    assert.throws(
+      () => loadEnv(base({ LANTERN_TOKEN: 'too-short' })),
+      (err: unknown) =>
+        err instanceof EnvError && /is 9 characters/.test(err.message) && /at least 16/.test(err.message),
+    )
+  })
+
+  it('refuses a long, well-formed, DEGENERATE value', () => {
+    // `'x'.repeat(24)` was asserted here as a VALID token, on the strength of being 24 characters
+    // long. It carries zero bits of entropy: every character is the same one. A floor that counts
+    // keystrokes cannot tell that apart from a key, which is the second half of why the floor is
+    // gone — the first half being the estate placeholder above.
+    assert.throws(
+      () => loadEnv(base({ LANTERN_TOKEN: 'x'.repeat(24) })),
+      (err: unknown) => err instanceof EnvError && /entropy/.test(err.message),
+    )
+  })
+
+  it('accepts a generated secret', () => {
+    const token = randomBytes(48).toString('base64')
+    assert.equal(loadEnv(base({ LANTERN_TOKEN: token })).token, token)
+  })
+
+  /**
+   * An operator's own value is accepted, and that is deliberate.
+   *
+   * `LANTERN_TOKEN` is a break-glass credential nobody mints — it is typed into a compose file and
+   * transcribed out of a runbook during an incident — so it is held to `assertOpaqueSecret` rather
+   * than to the estate's base64-or-hex rule. A guard that refused a working hand-set value would be
+   * a guard somebody removes, and the marker check that catches the real defect above is identical
+   * under both rules.
+   */
+  it('accepts a hand-set value whose alphabet the estate does not control', () => {
+    const typed = 'Zq7!vX#4mT$8kW%2nR&6'
+    assert.equal(loadEnv(base({ LANTERN_TOKEN: typed })).token, typed)
   })
 })
 

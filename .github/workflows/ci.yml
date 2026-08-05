@@ -26,11 +26,21 @@ jobs:
       port: 4010
       # The image startup smoke test boots the real service, and `env.ts` validates its
       # configuration at import — so the container needs the variables it declares, not just a
-      # database, or it exits before it serves /livez. These are CI-only NON-secrets: a throwaway
-      # token that only has to clear a length check, and a JWKS URL that is never dialled because
-      # /livez needs no identity. Never a real credential.
+      # database, or it exits before it serves /livez. The JWKS URL is never dialled, because /livez
+      # needs no identity. Never a real credential.
+      #
+      # `LANTERN_TOKEN=@generate` asks service-ci.yml for a fresh `openssl rand -base64 48` per run,
+      # thrown away afterwards. The line used to read
+      # `LANTERN_TOKEN=ci-only-not-a-real-token-0000000000000`, described in this comment as "a
+      # throwaway token that only has to clear a length check" — which is the defect stated out loud
+      # in configuration, and is exactly what @cloudsforge/secrets now refuses: `ci-only` and
+      # `not-a-real` are both placeholder markers, and the guard has no CI exemption on purpose
+      # (micro-org #142), because an escape hatch is reached for in the same hurry that produced the
+      # defect. CI does not need a WEAK secret, it needs A secret — nothing in the smoke test
+      # verifies a signature — so it generates a real one per run rather than committing a
+      # high-entropy literal that a future reader could mistake for a key.
       smoke-env: |
-        LANTERN_TOKEN=ci-only-not-a-real-token-0000000000000
+        LANTERN_TOKEN=@generate
         IDENTITY_JWKS_URL=http://127.0.0.1:4001/.well-known/jwks.json
         IDENTITY_ISSUER=http://127.0.0.1:4001
     secrets:
