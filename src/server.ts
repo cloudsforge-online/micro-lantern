@@ -7,7 +7,7 @@
  * ══════════════════════════════════════════════════════════════════════════════════════════════
  * **`POST /otlp/v1/logs` IS THE INGEST PATH, AND IT IS THE PRIMARY ONE.**
  *
- * The collector's `otlphttp/lantern` exporter (`deploy/otel/collector.yaml:198`) posts protobuf
+ * The collector's `otlphttp/lantern` exporter (`deploy/otel/collector.yaml`) posts protobuf
  * here, so this is the door almost every log line in the estate arrives by. It answers WITHOUT a
  * credential — the exporter presents none, by design, because a Lantern outage must not be able to
  * back-pressure the log pipeline into Loki — and it is defended instead by the size, count, depth
@@ -19,7 +19,7 @@
  * already does it" is the reason every skipped layer was skipped.
  * ══════════════════════════════════════════════════════════════════════════════════════════════
  *
- * **`/metrics` IS AUTHENTICATED.** 02-target-architecture.md:509-513 records the estate's own
+ * **`/metrics` IS AUTHENTICATED.** 02-target-architecture.md records the estate's own
  * correction: scraping the observation plane "costs a credential, not just a scrape config". This
  * service's `/metrics` publishes which services are producing errors and at what rate — a map of
  * where the estate is weakest — so it is gated by the same `x-lantern-token` the collector and
@@ -290,7 +290,7 @@ async function dispatch(route: Route | undefined, ctx: RequestContext, deps: Ser
     // exact branch. A cross-origin POST that 404s with no CORS headers is not reported to the page
     // as a 404. The browser refuses to let the script read the response at all and surfaces
     // `net::ERR_FAILED`, which is byte-for-byte what it surfaces when the host is not there.
-    // `beacon/src/browser/driver.ts:239-248` records the resulting ambiguity: "two real causes,
+    // `beacon/src/browser/driver.ts` records the resulting ambiguity: "two real causes,
     // neither" distinguishable — a service that is not deployed, and a path that disagrees.
     //
     // So the fix is not merely to answer; it is to answer WHERE THE CALLER CAN HEAR IT. This reply
@@ -403,7 +403,7 @@ function buildRoutes(): Route[] {
     /**
      * The primary ingest path. Protobuf by default (the collector's `otlphttp` default), JSON
      * accepted for the browser and for `curl`. Unauthenticated by design; defended by limits and
-     * scrubbing. The path is fixed by `deploy/otel/collector.yaml:198` and must not change.
+     * scrubbing. The path is fixed by `deploy/otel/collector.yaml` and must not change.
      */
     define('POST', '/otlp/v1/logs', async (ctx, deps) => {
       const body = await readRaw(ctx.req, deps.limits.maxBodyBytes)

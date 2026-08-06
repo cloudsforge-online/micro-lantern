@@ -9,10 +9,10 @@
  * **THREE VARIABLES IN THE FROZEN SERVICE DEFAULT TO A MODE THAT SHOULD NOT EXIST, AND ALL THREE
  * ARE REQUIRED HERE.**
  *
- * `stack/infra/lantern/src/env.js:35,43` default `NIMBUS_JWKS_URL` and `LANTERN_TOKEN` to the
- * empty string, and `src/auth.js:24-29,42` turns that pair of empty strings into
+ * `stack/infra/lantern/src/env.js,43` default `NIMBUS_JWKS_URL` and `LANTERN_TOKEN` to the
+ * empty string, and `src/auth.js,42` turns that pair of empty strings into
  * `authMode() === 'open'` — which returns `{ ok: true }` for every request before any credential is
- * examined. The service then logs a warning at boot (`src/server.js:284`) and serves every log line
+ * examined. The service then logs a warning at boot (`src/server.js`) and serves every log line
  * in the estate to anyone who can reach the port. A credential whose absence is a supported mode is
  * a credential nobody notices is absent, and a warning at boot is read once, on the day it is
  * deployed, by the person who already knows.
@@ -23,9 +23,9 @@
  *
  * The third is `LANTERN_DOCKER_COLLECTOR`. It defaults to OFF and it refuses to turn on outside
  * `NODE_ENV=development`, because the frozen service's PRIMARY collection path is a mounted
- * `/var/run/docker.sock` (`src/env.js:16`, `src/docker.js:12`) — and a container with the Docker
+ * `/var/run/docker.sock` (`src/env.js`, `src/docker.js`) — and a container with the Docker
  * socket mounted is a container with root on the host. It can create a privileged container with
- * `/` bind-mounted. 13-operational-model.md:132 demotes it to "a dev fallback behind
+ * `/` bind-mounted. 13-operational-model.md demotes it to "a dev fallback behind
  * `LANTERN_DOCKER_COLLECTOR`, off outside `dev`"; this is that sentence, enforced.
  * ══════════════════════════════════════════════════════════════════════════════════════════════
  *
@@ -227,19 +227,19 @@ export interface Env {
    * The credential Prometheus and the OTel collector present in `x-lantern-token`.
    *
    * `/metrics` is authenticated, and that is a correction this estate has already recorded once:
-   * 02-target-architecture.md:509-513 says of the sibling that "scraping Beacon costs a credential,
+   * 02-target-architecture.md says of the sibling that "scraping Beacon costs a credential,
    * not just a scrape config". It costs the same here and for a stronger reason — Lantern's
    * `/metrics` publishes which services are producing errors and at what rate, which is a map of
    * where the estate is weakest.
    *
    * The header name is `x-lantern-token` because that is the name the frozen service already reads
-   * (`stack/infra/lantern/src/auth.js:49`), so a deploy that already sets it keeps working.
+   * (`stack/infra/lantern/src/auth.js`), so a deploy that already sets it keeps working.
    */
   readonly token: string
 
   readonly limits: Limits
 
-  /** Raw events. Seven days, from 11-data-and-contract-strategy.md:425 — Loki holds the stream. */
+  /** Raw events. Seven days, from 11-data-and-contract-strategy.md — Loki holds the stream. */
   readonly eventRetentionDays: number
   /** Grouped issues. Ninety days: "an issue outlives its events; that is the point of grouping." */
   readonly issueRetentionDays: number
@@ -247,7 +247,7 @@ export interface Env {
    * Hourly rollups.
    *
    * These are this service's own table and they are why the retention above is affordable.
-   * Prometheus cannot downsample — 02-target-architecture.md:501-507 — so an error-rate trend
+   * Prometheus cannot downsample — 02-target-architecture.md — so an error-rate trend
    * older than the raw events has to be computed here or not at all.
    */
   readonly rollupRetentionDays: number
@@ -286,7 +286,7 @@ export function loadEnv(source: Source = process.env, host = ''): Env {
   if (dockerCollector && nodeEnv !== 'development') {
     // Refused rather than warned. The socket collector's three real advantages — nothing to
     // reconfigure, a dying service's last words still captured, no agent to install — are all
-    // stated at 13-operational-model.md:137-140, and they are the reason it survives at all. None
+    // stated at 13-operational-model.md, and they are the reason it survives at all. None
     // of them is worth handing every container on the host root on the host.
     throw new EnvError(
       'LANTERN_DOCKER_COLLECTOR is a development fallback and cannot be enabled with ' +
@@ -300,7 +300,7 @@ export function loadEnv(source: Source = process.env, host = ''): Env {
   if (issueRetentionDays < eventRetentionDays) {
     // An issue that expires before the events behind it is a grouping that has been thrown away
     // while its inputs survive — the exact inversion of what this service is for. 90 over 7 is the
-    // documented pair (11-data-and-contract-strategy.md:425-426) and the ordering is the point.
+    // documented pair (11-data-and-contract-strategy.md) and the ordering is the point.
     throw new EnvError(
       `LANTERN_ISSUE_RETENTION_DAYS (${issueRetentionDays}) must be at least ` +
         `LANTERN_EVENT_RETENTION_DAYS (${eventRetentionDays}) — an issue outlives its events`,

@@ -15,7 +15,7 @@
  *
  * **status_code is clamped here and refused at the column.** `events_status_code_range` (migration
  * 2) refuses anything outside 0..999, and an arbitrary JSON number reaching an INTEGER column
- * aborts the whole batch insert with 22003 — the defect the frozen `sanitise.js:18-20` records.
+ * aborts the whole batch insert with 22003 — the defect the frozen `sanitise.js` records.
  * Clamping is the behaviour; the CHECK is the guarantee.
  */
 

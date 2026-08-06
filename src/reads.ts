@@ -2,7 +2,7 @@
  * The read paths: the request-id lookup that is this service's primary human workflow, the event
  * and issue lists, and the once-per-scrape gauge refresh.
  *
- * 13-operational-model.md:73-78 — "a user quotes an id from an error screen and an operator pastes
+ * 13-operational-model.md — "a user quotes an id from an error screen and an operator pastes
  * it into one search box". That is `eventsByRequestId` and the partial `events_request_id_idx`
  * behind it, and `traceForRequestId` is what turns the paste into a jump to Tempo.
  */

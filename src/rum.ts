@@ -4,9 +4,9 @@
  * ══════════════════════════════════════════════════════════════════════════════════════════════
  * **THERE IS NO user_id, AND THE FIELD IS DROPPED AT INGEST.**
  *
- * 11-data-and-contract-strategy.md:469 says of this plane: "Nothing to do — expires within 30 days,
+ * 11-data-and-contract-strategy.md says of this plane: "Nothing to do — expires within 30 days,
  * and holds no `user_id` by policy". The frozen browser sink breaks exactly that policy —
- * `stack/infra/lantern/src/server.js:136` writes `userId: item.userId`. There is no column to store
+ * `stack/infra/lantern/src/server.js` writes `userId: item.userId`. There is no column to store
  * one in here (migration 4), `fromWire` deletes the field whatever a page sends, and a test plants
  * one and asserts it never reaches the database.
  * ══════════════════════════════════════════════════════════════════════════════════════════════

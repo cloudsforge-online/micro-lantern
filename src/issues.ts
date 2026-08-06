@@ -3,13 +3,13 @@
  *
  * `fingerprint.ts` decides WHICH group a record belongs to; this decides what happens to the group
  * row when another occurrence arrives. The whole of the status ladder that
- * 13-operational-model.md:134 asks for — `new → acknowledged → resolved → regressed` — lives in the
+ * 13-operational-model.md asks for — `new → acknowledged → resolved → regressed` — lives in the
  * one upsert below.
  *
  * ══════════════════════════════════════════════════════════════════════════════════════════════
  * **A RESOLVED ISSUE THAT HAPPENS AGAIN MUST NOT SILENTLY ABSORB THE NEW OCCURRENCES.**
  *
- * The frozen `issues` table has one piece of state, a nullable `resolved_at` (`db.js:96`), so an
+ * The frozen `issues` table has one piece of state, a nullable `resolved_at` (`db.js`), so an
  * occurrence after a resolve just bumps `last_seen` under a green label and nobody is told the
  * fault came back. Here, an occurrence whose `last_seen` is past the `resolved_at` moves the row to
  * `regressed` and stamps `regressed_at` in the SAME statement — and `issues_regressed_has_time`

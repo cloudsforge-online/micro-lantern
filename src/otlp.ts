@@ -4,7 +4,7 @@
  * ══════════════════════════════════════════════════════════════════════════════════════════════
  * **THE PATH IS `POST /otlp/v1/logs`, AND THAT IS NOT A CHOICE.**
  *
- * `deploy/otel/collector.yaml:197-203` declares the exporter that feeds this service:
+ * `deploy/otel/collector.yaml` declares the exporter that feeds this service:
  *
  *     otlphttp/lantern:
  *       endpoint: ${env:LANTERN_OTLP_ENDPOINT}
@@ -18,7 +18,7 @@
  * `collector.yaml` does not set it. An implementation that accepted only `application/json` would
  * answer 415 to every single export the estate ever sent it — silently, because the exporter is
  * configured with `retry_on_failure: enabled: false` and a `sending_queue` that DROPS rather than
- * blocks (`collector.yaml:200-203`), by design, so that a Lantern outage cannot back-pressure the
+ * blocks (`collector.yaml`), by design, so that a Lantern outage cannot back-pressure the
  * log pipeline into Loki. Nothing would page. Lantern would simply be empty, and would look like a
  * service nobody had gotten round to using.
  *
@@ -697,7 +697,7 @@ function stringAt(source: Record<string, unknown>, camel: string, snake: string,
  * `timeUnixNano` is an int64, and proto3 JSON encodes an int64 as a STRING. Producers emit both,
  * so both are read — and a value that is neither is null rather than `NaN`, which would become an
  * Invalid Date and make the driver throw a RangeError with no SQLSTATE. The frozen service records
- * that exact failure at `stack/infra/lantern/src/sanitise.js:28-31`.
+ * that exact failure at `stack/infra/lantern/src/sanitise.js`.
  */
 function nanosAt(source: Record<string, unknown>, camel: string, snake: string): bigint | null {
   const value = source[camel] ?? source[snake]

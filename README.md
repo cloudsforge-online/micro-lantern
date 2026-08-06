@@ -13,7 +13,7 @@ service failure, and neither is this one.
 ## What it is
 
 - **`POST /otlp/v1/logs`** — the primary ingest path. The OTel collector's `otlphttp/lantern`
-  exporter posts OTLP **protobuf** here (`../deploy/otel/collector.yaml:198`,
+  exporter posts OTLP **protobuf** here (`../deploy/otel/collector.yaml`,
   `../deploy/compose/env/otel-collector.env:24`, `../deploy/Makefile:65` set the endpoint to
   `http://lantern:4010/otlp`, and the exporter appends `/v1/logs`). The protobuf wire format is
   decoded by hand, with no dependency in the process that parses attacker-controlled bytes. JSON is
@@ -79,23 +79,23 @@ things that do not survive contact with the estate it now lives in. Each was ver
 
 | Defect in the frozen service | Where | The correction here |
 |---|---|---|
-| **Ingest is open by default.** `NIMBUS_JWKS_URL` and `LANTERN_TOKEN` default to the empty string, and that pair makes `authMode()` return `'open'`, which serves every log line to anyone who can reach the port. | `stack/infra/lantern/src/env.js:35,43`, `src/auth.js:24-31,42` | `LANTERN_TOKEN` is **required**, length-checked, and refuses a placeholder (`src/env.ts`). |
+| **Ingest is open by default.** `NIMBUS_JWKS_URL` and `LANTERN_TOKEN` default to the empty string, and that pair makes `authMode()` return `'open'`, which serves every log line to anyone who can reach the port. | `stack/infra/lantern/src/env.js,43`, `src/auth.js,42` | `LANTERN_TOKEN` is **required**, length-checked, and refuses a placeholder (`src/env.ts`). |
 | **No credential scrubbing at all.** `sanitise.js` strips NUL bytes and clamps numbers; "scrub" throughout the repo refers only to NUL-stripping. Every credential any service logged is stored in plain text for seven days. | `stack/infra/lantern/src/sanitise.js` (whole file) | Credentials removed **before persistence**, by kind, as a constant (`src/scrub.ts`, `src/ingest.ts`). |
-| **The browser sink stores `user_id`.** | `stack/infra/lantern/src/server.js:136` (`userId: item.userId`) | No `user_id` column exists; `src/rum.ts` never reads the field; a test asserts it never reaches the database. |
-| **The whole schedule is `setInterval`.** Two replicas flush and re-run DDL twice. | `stack/infra/lantern/src/index.js:18-27`, `store.js` | Every recurring task is a leased job keyed `global` (`src/jobs.ts`). |
-| **DDL is re-run on every boot with no version table or advisory lock**, retried every 15s while Postgres is down. | `stack/infra/lantern/src/db.js:52-172`, `src/index.js:13,18-27` | Versioned migrations under an advisory lock, run by a one-shot `src/migrator.ts`; the service asserts the version and refuses to serve below it. |
-| **Grouping explodes on the estate's own request ids** (16 chars of base32, not hex) and on 12-char container ids / git shas. | `stack/infra/lantern/src/fingerprint.js:14-30` | The correlation-id and 12-char-hash rules in `src/fingerprint.ts`. |
-| **A resolved issue that recurs stays green** — the only state is a nullable `resolved_at`. | `stack/infra/lantern/src/db.js:96` | A `new → acknowledged → resolved → regressed` ladder; a later occurrence stamps `regressed_at`, enforced by `issues_regressed_has_time`. |
-| **No `trace_id` on a log line**, so Lantern and Tempo are two unrelated records. | `stack/infra/lantern/src/db.js:60-78` | `trace_id`/`span_id` columns with a shape CHECK, and the request-id → trace lookup. |
-| **The Docker socket is the primary collector** — a container with `/var/run/docker.sock` mounted has root on the host. | `stack/infra/lantern/src/env.js:16`, `src/docker.js:12` | OTLP push is primary; the socket collector is a dev-only fallback that boot **refuses** to enable outside `NODE_ENV=development` (`src/env.ts`). |
+| **The browser sink stores `user_id`.** | `stack/infra/lantern/src/server.js` (`userId: item.userId`) | No `user_id` column exists; `src/rum.ts` never reads the field; a test asserts it never reaches the database. |
+| **The whole schedule is `setInterval`.** Two replicas flush and re-run DDL twice. | `stack/infra/lantern/src/index.js`, `store.js` | Every recurring task is a leased job keyed `global` (`src/jobs.ts`). |
+| **DDL is re-run on every boot with no version table or advisory lock**, retried every 15s while Postgres is down. | `stack/infra/lantern/src/db.js`, `src/index.js,18-27` | Versioned migrations under an advisory lock, run by a one-shot `src/migrator.ts`; the service asserts the version and refuses to serve below it. |
+| **Grouping explodes on the estate's own request ids** (16 chars of base32, not hex) and on 12-char container ids / git shas. | `stack/infra/lantern/src/fingerprint.js` | The correlation-id and 12-char-hash rules in `src/fingerprint.ts`. |
+| **A resolved issue that recurs stays green** — the only state is a nullable `resolved_at`. | `stack/infra/lantern/src/db.js` | A `new → acknowledged → resolved → regressed` ladder; a later occurrence stamps `regressed_at`, enforced by `issues_regressed_has_time`. |
+| **No `trace_id` on a log line**, so Lantern and Tempo are two unrelated records. | `stack/infra/lantern/src/db.js` | `trace_id`/`span_id` columns with a shape CHECK, and the request-id → trace lookup. |
+| **The Docker socket is the primary collector** — a container with `/var/run/docker.sock` mounted has root on the host. | `stack/infra/lantern/src/env.js`, `src/docker.js` | OTLP push is primary; the socket collector is a dev-only fallback that boot **refuses** to enable outside `NODE_ENV=development` (`src/env.ts`). |
 
 ### One inherited claim found imprecise
 
-`src/scrub.ts:9-11` states that a grep of the frozen repo for `redact`, `scrub`, `secret`, `bearer`
+`src/scrub.ts` states that a grep of the frozen repo for `redact`, `scrub`, `secret`, `bearer`
 or `password` "finds the word only in comments about the service's own `LANTERN_TOKEN`." That is
 not quite right: `scrub` appears in three NUL-stripping sites
-(`stack/infra/lantern/src/sanitise.js:65`, `src/store.js:53`, `test/poison.test.js:64`) and `bearer`
-is a live variable on the incoming-auth path (`src/auth.js:46,55,57`). The file's substantive claim —
+(`stack/infra/lantern/src/sanitise.js`, `src/store.js`, `test/poison.test.js`) and `bearer`
+is a live variable on the incoming-auth path (`src/auth.js,55,57`). The file's substantive claim —
 that the frozen service has **no credential scrubbing** — holds exactly: every "scrub" in that repo
 is about NUL bytes, not secrets. The behaviour is correct; only the parenthetical is loose, so it is
 left in place and noted here rather than rewritten.

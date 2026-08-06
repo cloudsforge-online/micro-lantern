@@ -5,8 +5,8 @@
  * **THE FROZEN SERVICE HAS NO SCRUBBING AT ALL, AND THAT IS THE SINGLE WORST THING ABOUT IT.**
  *
  * `stack/infra/lantern/src/sanitise.js` is named as though it did this. It does not: it strips
- * U+0000 (`:61`), clamps `status_code` to something an INTEGER column can hold (`:51`) and rejects
- * a NaN latency (`:56`). Every one of those is about what Postgres will accept, not about what
+ * U+0000, clamps `status_code` to something an INTEGER column can hold and rejects
+ * a NaN latency. Every one of those is about what Postgres will accept, not about what
  * Lantern should keep. A grep of that entire repository for `redact`, `scrub`, `secret`, `bearer`
  * or `password` finds the word only in comments about the service's own `LANTERN_TOKEN`.
  *
@@ -18,13 +18,13 @@
  *
  * **Scrubbing happens BEFORE persistence, never at render.** Redacting on the way out means the
  * secret is in the database, in its backups, in the nightly dump named at
- * 13-operational-model.md:683, and in the reach of every future read path anyone adds. There is
+ * 13-operational-model.md, and in the reach of every future read path anyone adds. There is
  * exactly one way to not store a secret, and it is to not store it.
  * ══════════════════════════════════════════════════════════════════════════════════════════════
  *
  * **Why this is not merely the collector's job.** The collector already drops `authorization`,
  * `cookie` and `set-cookie` and any key matching `/token|secret|password|mnemonic|private_key|seed/`
- * (13-operational-model.md:87-89, implemented at `deploy/otel/collector.yaml` `attributes/redact`).
+ * (13-operational-model.md, implemented at `deploy/otel/collector.yaml` `attributes/redact`).
  * That handles ATTRIBUTES. It cannot handle a credential in the message BODY — `log.error('upstream
  * refused: Authorization: Bearer eyJhbGciOi…')` is one string to a processor that redacts by key —
  * and it does not run at all on the two paths that reach this service without passing through it:
@@ -73,7 +73,7 @@ export interface Redaction {
 /**
  * A key name that means the value beside it is a credential, whatever the value looks like.
  *
- * The same list as the collector's `attributes/redact` (13-operational-model.md:88), plus the
+ * The same list as the collector's `attributes/redact` (13-operational-model.md), plus the
  * shapes that appear in this estate's own logs. It is applied to attribute KEYS and to `key=value`
  * and `"key": "value"` inside message text, because a secret written into a sentence is still a
  * secret.

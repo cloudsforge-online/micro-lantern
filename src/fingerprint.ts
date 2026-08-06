@@ -3,7 +3,7 @@
  *
  * A broken deploy produces thousands of lines and about four distinct problems. Showing the lines
  * is easy and nearly useless; showing the four is the job. Loki will return the 1,240 rows and
- * never tell you there are four — 13-operational-model.md:114-121 is explicit that "error grouping
+ * never tell you there are four — 13-operational-model.md is explicit that "error grouping
  * is the product; log search is the commodity", and it is the whole reason this service survives
  * the move to Loki at all.
  *
@@ -15,12 +15,12 @@
  * issue list is the thing nobody opens. Every rule below is there because some real message
  * carries a value that changes on every occurrence.
  *
- * The frozen service's normaliser (`stack/infra/lantern/src/fingerprint.js:14-30`) is genuinely
+ * The frozen service's normaliser (`stack/infra/lantern/src/fingerprint.js`) is genuinely
  * good and most of it comes forward unchanged. Two gaps are closed:
  *
  *   1. **Correlation ids were not normalised.** The frozen rules collapse UUIDs, `0x` addresses,
  *      16-plus-character hex and numbers — but this estate's own request ids are neither. The
- *      runtime's `newRequestId` (`runtime/packages/telemetry/src/index.ts:322-327`) emits sixteen
+ *      runtime's `newRequestId` (`runtime/packages/telemetry/src/index.ts`) emits sixteen
  *      characters of Crockford-ish base32, chosen precisely so a human can read one down a phone
  *      line, and its own comment at :320 says "Lantern's primary workflow is pasting one back".
  *      Sixteen characters of base32 are not hex, so `\b[0-9a-f]{16,}\b` never matched them, and a
@@ -130,7 +130,7 @@ export const NORMAL_RULES: readonly NormalRule[] = Object.freeze([
     with: '<url>',
   },
   {
-    // `at src/server.ts:412:19`. Before `<n>`, which would otherwise leave `:<n>:<n>`.
+    // `at src/server.ts:19`. Before `<n>`, which would otherwise leave `:<n>:<n>`.
     name: 'pos',
     pattern: /:\d+:\d+\b/g,
     with: ':<pos>',
@@ -200,7 +200,7 @@ export function topFrame(stack: string | null | undefined): string {
  * service in this estate logs its own error for the same failure, so grouping these too files
  * every fault twice: once under its real cause and once under the title "request completed". Two
  * entries for one problem is the exact noise this service exists to remove. Ported verbatim in
- * intent from `stack/infra/lantern/src/fingerprint.js:53`.
+ * intent from `stack/infra/lantern/src/fingerprint.js`.
  */
 export const FRAMEWORK_LINES: ReadonlySet<string> = new Set([
   'request completed',

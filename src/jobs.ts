@@ -8,7 +8,7 @@
  * **THIS FILE REPLACES THE FROZEN SERVICE'S TWO MODULE-SCOPE TIMERS, AND THAT IS THE POINT.**
  *
  * The service this supersedes flushes its write buffer on a `setInterval` (`store.js`) and re-runs
- * its whole DDL on another (`index.js:18-27`). Both are per-process state, so two replicas do the
+ * its whole DDL on another (`index.js`). Both are per-process state, so two replicas do the
  * work twice: two flushes racing on the same rows, two `CREATE TABLE`s at once when Postgres comes
  * back mid-deploy. Each job here is claimed `FOR UPDATE SKIP LOCKED` under a lease keyed `global`,
  * so with N replicas each tick runs exactly once — the retention DELETE runs once, the rollup
@@ -18,7 +18,7 @@
  * Rollup re-runs over the last few hours on purpose: the current hour is incomplete every time it
  * is written, so the upsert has to CORRECT it rather than assume it is final. `event_rollups` is
  * why seven-day event retention is affordable — Prometheus cannot downsample
- * (02-target-architecture.md:501-507), so a 400-day error-rate trend is this table or nothing.
+ * (02-target-architecture.md), so a 400-day error-rate trend is this table or nothing.
  */
 
 import { type JobQueue, type JobRunner, type RunnerEvent } from '@cloudsforge/jobs'

@@ -10,8 +10,8 @@
  *      rollback of the image is not a rollback of the database.
  *
  * This service supersedes one that has no migration framework at all: the frozen
- * `stack/infra/lantern/src/db.js:52-172` is one idempotent DDL block run on every boot from
- * `src/index.js:13`, and `src/index.js:18-27` arms a `setInterval` that RETRIES that DDL every
+ * `stack/infra/lantern/src/db.js` is one idempotent DDL block run on every boot from
+ * `src/index.js`, and `src/index.js` arms a `setInterval` that RETRIES that DDL every
  * fifteen seconds while the database is unreachable — so a Postgres that comes back during a
  * rolling deploy is met by every replica running `CREATE TABLE` at once. This is the correction.
  *
