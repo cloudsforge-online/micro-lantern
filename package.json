@@ -1,6 +1,6 @@
 {
   "name": "@cloudsforge/lantern",
-  "version": "2026.8.90",
+  "version": "2026.8.91",
   "private": true,
   "description": "The error-tracking plane. OTLP/HTTP log ingest decoded by hand at the hostile-input boundary, credentials scrubbed before persistence, occurrences grouped into issues by a normaliser that does not explode into one group per line, a browser RUM sink that holds no user_id by policy, retention and hourly rollups on a leased schedule, and an authenticated Prometheus surface. Supersedes the frozen stack/infra/lantern, whose ingest is open, unscrubbed, and scheduled by setInterval.",
   "license": "MIT",
