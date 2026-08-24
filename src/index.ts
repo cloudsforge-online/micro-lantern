@@ -71,8 +71,20 @@ const db = sql as unknown as Sql
 // handle and REFUSES a testnet request rather than answering it out of mainnet rows. That refusal
 // is the whole safety property — a substituted handle is a query that SUCCEEDS and says nothing.
 const sqlTestnet = env.databaseUrlTestnet ? postgres(env.databaseUrlTestnet, poolOptions) : undefined
+// ── WHICH ESTATE THIS DEPLOYMENT IS ─────────────────────────────────────────────────────────
+//
+// The `networkSql` key below used to be the literal `mainnet`. Same image, same code,
+// different env — so the TESTNET pod registered its testnet DSN under the name `mainnet` and
+// then refused every request the gateway stamped `CF-Network: testnet`, because it genuinely
+// held no handle by that name. Five services crash-looped on it within ten minutes of the
+// first deploy: the refusal was right, the registration was wrong.
+//
+// `CF_NETWORK_SINGLE` is how a single-network pod says which estate it is. The render sets it
+// for every deployment; `mainnet` remains the default only for a bare `pnpm dev`.
+const ownNetwork = (env.singleNetwork || 'mainnet') as 'mainnet' | 'testnet'
+
 const networks = networkSql({
-  mainnet: db,
+  [ownNetwork]: db,
   ...(sqlTestnet ? { testnet: sqlTestnet as unknown as Sql } : {}),
 })
 
@@ -115,7 +127,11 @@ const server = createServer({
   metrics,
   verifier,
   sql: networks,
-  ...(env.singleNetwork ? { singleNetwork: env.singleNetwork as 'mainnet' | 'testnet' } : {}),
+  // The fallback for a request with no `CF-Network` header — which is EVERY service-to-service
+  // call, because those go container to container and never reach the gateway that stamps one.
+  // `requestNetwork` still prefers the header, so this cannot mask a mis-stamped external
+  // request; it only answers the internal callers that never had one.
+  singleNetwork: ownNetwork,
   token: env.token,
   limits: env.limits,
   rumOrigins: env.rumOrigins,
