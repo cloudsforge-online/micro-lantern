@@ -85,7 +85,7 @@ const ownNetwork = (env.singleNetwork || 'mainnet') as 'mainnet' | 'testnet'
 
 const networks = networkSql({
   [ownNetwork]: db,
-  ...(sqlTestnet ? { testnet: sqlTestnet as unknown as Sql } : {}),
+  ...(sqlTestnet && ownNetwork !== 'testnet' ? { testnet: sqlTestnet as unknown as Sql } : {}),
 })
 
 // 4. Assert the schema. This does NOT migrate. Failing here rather than serving is the point.
