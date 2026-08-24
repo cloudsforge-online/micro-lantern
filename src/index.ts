@@ -24,7 +24,7 @@
  */
 
 import postgres from 'postgres'
-import { assertSchemaAtLeast, type Sql } from '@cloudsforge/db'
+import { assertSchemaAtLeast, networkSql, type Sql } from '@cloudsforge/db'
 import { JobQueue, JobRunner, type Sql as JobsSql } from '@cloudsforge/jobs'
 import { Verifier } from '@cloudsforge/auth'
 import { Lifecycle, installSignalHandlers, postgresProbe } from '@cloudsforge/lifecycle'
@@ -58,11 +58,23 @@ logger.info('starting', {
 
 // 3. The database pool. Opened before the schema assertion (which is a query) and before the
 //    Lifecycle (whose readiness probe closes over it).
-const sql = postgres(env.databaseUrl, {
+const poolOptions = {
   max: env.databasePoolMax,
   onnotice: () => {},
-})
+}
+const sql = postgres(env.databaseUrl, poolOptions)
 const db = sql as unknown as Sql
+
+// ── ONE POOL PER NETWORK THIS DEPLOYMENT SERVES ─────────────────────────────────────────────────
+//
+// `LANTERN_DATABASE_URL_TESTNET` unset is the single-network case: `networkSql` then holds one
+// handle and REFUSES a testnet request rather than answering it out of mainnet rows. That refusal
+// is the whole safety property — a substituted handle is a query that SUCCEEDS and says nothing.
+const sqlTestnet = env.databaseUrlTestnet ? postgres(env.databaseUrlTestnet, poolOptions) : undefined
+const networks = networkSql({
+  mainnet: db,
+  ...(sqlTestnet ? { testnet: sqlTestnet as unknown as Sql } : {}),
+})
 
 // 4. Assert the schema. This does NOT migrate. Failing here rather than serving is the point.
 try {
@@ -102,7 +114,8 @@ const server = createServer({
   logger,
   metrics,
   verifier,
-  sql: db,
+  sql: networks,
+  ...(env.singleNetwork ? { singleNetwork: env.singleNetwork as 'mainnet' | 'testnet' } : {}),
   token: env.token,
   limits: env.limits,
   rumOrigins: env.rumOrigins,

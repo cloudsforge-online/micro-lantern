@@ -14,6 +14,9 @@ importers:
       '@cloudsforge/db':
         specifier: link:../runtime/packages/db
         version: link:../runtime/packages/db
+      '@cloudsforge/http':
+        specifier: link:../runtime/packages/http
+        version: link:../runtime/packages/http
       '@cloudsforge/jobs':
         specifier: link:../runtime/packages/jobs
         version: link:../runtime/packages/jobs
