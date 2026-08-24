@@ -5,6 +5,7 @@
  * to prove the static-token door, the 401 path, and that `/metrics` costs a credential.
  */
 
+import { networkSql } from '@cloudsforge/db'
 import assert from 'node:assert/strict'
 import { after, before, beforeEach, describe, it } from 'node:test'
 import type { AddressInfo } from 'node:net'
@@ -49,7 +50,8 @@ async function start(sql: postgres.Sql, overrides: Partial<ServerDeps> = {}): Pr
     logger: quietLogger(),
     metrics: testMetrics(),
     verifier,
-    sql: db(sql),
+    sql: networkSql({ mainnet: db(sql) }),
+    singleNetwork: 'mainnet' as const,
     token: TOKEN,
     limits: LIMITS,
     rumOrigins: ['http://app.example'],

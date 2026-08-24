@@ -35,8 +35,9 @@ import {
   type ServerResponse,
 } from 'node:http'
 import { ForbiddenError, TokenError, bearerFrom, statusFor, type Principal } from '@cloudsforge/auth'
-import type { Sql } from '@cloudsforge/db'
 import type { Lifecycle } from '@cloudsforge/lifecycle'
+import { NetworkUnknownError, requestNetwork, type Network } from '@cloudsforge/http'
+import type { NetworkSql, Sql } from '@cloudsforge/db'
 import { Metrics, newRequestId, type Logger } from '@cloudsforge/telemetry'
 import type { Limits } from './env.ts'
 import { IngestError, decodeExport } from './otlp.ts'
@@ -58,7 +59,17 @@ export interface ServerDeps {
   readonly logger: Logger
   readonly metrics: Metrics
   readonly verifier: PrincipalVerifier
-  readonly sql: Sql
+  /**
+   * The per-network SELECTOR, not a handle. `NetworkSql` has no query methods, so a route that
+   * reaches for the process-wide handle instead of `ctx.sql` does not compile — which is the point:
+   * a wrong handle is not an error, it is a query that SUCCEEDS against the other estate's rows.
+   */
+  readonly sql: NetworkSql
+  /**
+   * The network to assume when no `CF-Network` arrives, or `undefined` to refuse. `CF_NETWORK_SINGLE`,
+   * for `pnpm dev`, which has no gateway in front of it. Never set in production.
+   */
+  readonly singleNetwork?: Network
   /** The static break-glass credential, presented in `x-lantern-token`. See the file header. */
   readonly token: string
   readonly limits: Limits
@@ -154,7 +165,32 @@ interface RequestContext {
   readonly requestId: string
   readonly log: Logger
   readonly params: Readonly<Record<string, string>>
+  /**
+   * The network THIS REQUEST belongs to, from the `CF-Network` header the gateway stamped.
+   *
+   * Not a property of the process: one pod serves both estates since the network consolidation
+   * (micro-deploy `docs/network-consolidation.md`), so "which network am I" has no answer.
+   */
+  readonly network: Network
+  /**
+   * The database handle for `network`, resolved ONCE, at the edge of the request.
+   *
+   * Every route uses this rather than reaching for the process-wide handle, because a wrong handle
+   * is not an error — it is a query that SUCCEEDS against the other estate's rows and says nothing.
+   * `deps.sql` is a `NetworkSql` with no query methods, so the mistake does not compile.
+   */
+  readonly sql: Sql
 }
+
+/**
+ * Routes that answer without belonging to a network.
+ *
+ * Kubelet probes the first two and Prometheus scrapes the third; none arrives through the gateway,
+ * so none carries `CF-Network`. Refusing them makes every health probe a 500 and the pod never
+ * becomes ready. Three literal paths rather than a prefix, because this is an exemption from a data
+ * boundary; none of them queries the database.
+ */
+const OPERATIONAL_ROUTES: ReadonlySet<string> = new Set(['/livez', '/readyz', '/metrics'])
 
 interface Route {
   readonly method: string
@@ -220,23 +256,61 @@ export function createServer(deps: ServerDeps): Server {
     inFlight += 1
     deps.metrics.set('http_requests_in_flight', inFlight)
 
-    const finish = (status: number) => {
+    const finish = (status: number, metricNetwork: string) => {
       inFlight -= 1
       deps.metrics.set('http_requests_in_flight', inFlight)
       const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6
-      deps.metrics.increment('http_requests_total', { method, route: routeLabel, status: String(status) })
-      deps.metrics.observe('http_request_duration_ms', durationMs, { method, route: routeLabel })
+      deps.metrics.increment('http_requests_total', {
+        method,
+        route: routeLabel,
+        status: String(status),
+        // One target now serves both estates, so the network has to be on the SERIES. Labelled
+        // per target it would say nothing — micro-org#398 in a form nothing could recover.
+        network: metricNetwork,
+      })
+      deps.metrics.observe('http_request_duration_ms', durationMs, {
+        method,
+        route: routeLabel,
+        network: metricNetwork,
+      })
     }
 
-    void handle(matched, { req, url, requestId, log, params }, deps)
+    // ── THE NETWORK, THEN THE HANDLE, BEFORE ANY ROUTE RUNS ──────────────────────────────────
+    //
+    // `requestNetwork` REFUSES an unstamped request rather than assuming mainnet: a 500 is a
+    // routing fault made loud, where a default is a cross-network write nothing would ever flag.
+    //
+    // The operational endpoints are exempt because kubelet and Prometheus do not come through the
+    // gateway and never send the header. Refusing them makes the pod never become ready.
+    const networkless = matched !== undefined && OPERATIONAL_ROUTES.has(matched.path)
+    let network: Network
+    try {
+      network = networkless
+        ? (deps.singleNetwork ?? deps.sql.networks[0] ?? 'mainnet')
+        : requestNetwork(req.headers, deps.singleNetwork ? { fallback: deps.singleNetwork } : {})
+    } catch (err) {
+      log.error('request carries no usable network', {
+        err: err instanceof NetworkUnknownError ? err.message : err,
+      })
+      send(
+        res,
+        errorReply(500, 'network_unknown', 'this request could not be attributed to a network', requestId),
+        requestId,
+      )
+      finish(500, 'unknown')
+      return
+    }
+
+    const sql = deps.sql.for(network)
+    void handle(matched, { req, url, requestId, log, params, network, sql }, deps)
       .then((reply) => {
         send(res, reply, requestId)
-        finish(reply.status)
+        finish(reply.status, network)
       })
       .catch((err: unknown) => {
         log.error('request handler threw after mapping', { err })
         send(res, errorReply(500, 'internal', 'the request could not be completed', requestId), requestId)
-        finish(500)
+        finish(500, network)
       })
   })
 }
@@ -410,7 +484,7 @@ function buildRoutes(): Route[] {
       const contentType = headerOf(ctx.req, 'content-type') ?? ''
       const decoded = decodeExport(body, contentType, deps.limits)
 
-      const outcome = await ingest(deps.sql, decoded.records, 'otlp', deps.limits)
+      const outcome = await ingest(ctx.sql, decoded.records, 'otlp', deps.limits)
 
       for (const [severity, count] of outcome.bySeverity) {
         deps.metrics.increment('lantern_events_ingested_total', { source: 'otlp', severity }, count)
@@ -488,7 +562,7 @@ function buildRoutes(): Route[] {
         const sample = fromWire(wire, deps.limits, removed, dropped)
         if (sample) samples.push(sample)
       }
-      const stored = await insertRum(deps.sql, samples)
+      const stored = await insertRum(ctx.sql, samples)
       for (const sample of samples) deps.metrics.increment('lantern_rum_samples_total', { kind: sample.kind })
       recordSecrets(deps.metrics, removed)
 
@@ -539,8 +613,8 @@ function buildRoutes(): Route[] {
     define('GET', '/v1/requests/:requestId', async (ctx, deps) => {
       await authorise(ctx, deps)
       const requestId = ctx.params['requestId'] ?? ''
-      const events = await eventsByRequestId(deps.sql, requestId)
-      const traceId = await traceForRequestId(deps.sql, requestId)
+      const events = await eventsByRequestId(ctx.sql, requestId)
+      const traceId = await traceForRequestId(ctx.sql, requestId)
       return {
         status: 200,
         body: {
@@ -555,12 +629,12 @@ function buildRoutes(): Route[] {
     define('GET', '/v1/issues', async (ctx, deps) => {
       await authorise(ctx, deps)
       const limit = clampLimit(ctx.url.searchParams.get('limit'), 100, 500)
-      return { status: 200, body: { issues: await listOpenIssues(deps.sql, limit) } }
+      return { status: 200, body: { issues: await listOpenIssues(ctx.sql, limit) } }
     }),
 
     define('GET', '/v1/events', async (ctx, deps) => {
       await authorise(ctx, deps)
-      const events = await listEvents(deps.sql, {
+      const events = await listEvents(ctx.sql, {
         ...paramOrUndef(ctx.url.searchParams.get('service'), 'service'),
         ...paramOrUndef(ctx.url.searchParams.get('severity'), 'severity'),
         ...paramOrUndef(ctx.url.searchParams.get('traceId'), 'traceId'),
@@ -578,7 +652,7 @@ function buildRoutes(): Route[] {
      */
     define('GET', '/v1/rum', async (ctx, deps) => {
       await authorise(ctx, deps)
-      const samples = await listRumSamples(deps.sql, {
+      const samples = await listRumSamples(ctx.sql, {
         ...paramOrUndef(ctx.url.searchParams.get('app'), 'app'),
         ...paramOrUndef(ctx.url.searchParams.get('kind'), 'kind'),
         ...paramOrUndef(ctx.url.searchParams.get('session'), 'session'),
