@@ -25,7 +25,7 @@
 import type { Server } from 'node:http'
 import type { Sql } from '@cloudsforge/db'
 import type { Metrics } from '@cloudsforge/telemetry'
-import { mountRoutes } from './kernel.ts'
+import { mountRoutes, type RouteSpec } from './kernel.ts'
 import { createRoutes, type ServerDeps } from './routes.ts'
 import { openIssueCounts } from './issues.ts'
 
@@ -102,13 +102,44 @@ export function registerServiceMetrics(metrics: Metrics): Metrics {
 }
 
 /**
- * The listener.
+ * The listener, lantern's routes only.
  *
  * One line, and it says the whole design: build this service's routes against this service's
- * dependencies, then hand them to a kernel that cannot see either.
+ * dependencies, then hand them to a kernel that cannot see either. Kept as its own export because
+ * every one of `server.test.ts`'s cases drives exactly this surface, and because a merged listener
+ * that could not also be built without the second module would make lantern untestable alone.
  */
 export function createServer(deps: ServerDeps): Server {
   return mountRoutes(createRoutes(deps), deps)
+}
+
+/**
+ * The listener this process actually runs: lantern's routes, then a mounted module's.
+ *
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ * **TWO DEPENDENCY BAGS, NEVER ONE.** `deps` is lantern's and nothing else; `mounted` arrived as
+ * closures that had already captured a bag this function has no name for. That asymmetry is the
+ * merge's central safety property — this signature CANNOT be handed the analytics pepper, because
+ * there is no parameter it would arrive through.
+ *
+ * Order is first-wins, and lantern goes first for two reasons that both matter:
+ *
+ *   1. `/livez`, `/readyz` and `/metrics` are lantern's in this process (see
+ *      `analytics/module.ts`'s `mountableRoutes` for why), and a mounted module must not be able
+ *      to shadow them by accident.
+ *   2. lantern's `fallback` — the CORS-decorated unknown-`/ingest/*` reply — must remain the miss
+ *      for the whole process. `mountRoutes` takes the FIRST fallback in the list and matches none
+ *      of them by path, so appending a second module cannot displace it.
+ *
+ * Checked, not assumed: the two path sets are disjoint apart from the three operational paths.
+ * `POST /ingest` (analytics) and `POST /ingest/client` (lantern) compile to `^/ingest$` and
+ * `^/ingest/client$`, which cannot both match one request — and the gateway rule was narrowed to
+ * `PathPrefix(/ingest/)` in the same wave so the bare `/ingest` is not internet-reachable.
+ * `mergedroutes.test.ts` pins all of it.
+ * ══════════════════════════════════════════════════════════════════════════════════════════════
+ */
+export function createMergedServer(deps: ServerDeps, mounted: readonly RouteSpec[]): Server {
+  return mountRoutes([...createRoutes(deps), ...mounted], deps)
 }
 
 /* ------------------------------------------------------------------ the scrape refresh */

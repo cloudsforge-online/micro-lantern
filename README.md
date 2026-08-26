@@ -1,9 +1,16 @@
 # lantern
 
-The estate's **error-tracking plane**: it takes the log lines every service emits, removes the
-credentials they carry, groups the occurrences into *issues*, and answers the one question an
-operator actually asks — "here is a request id off an error screen; what happened, and where is the
-trace?"
+The estate's **telemetry plane**, in one process and two modules.
+
+**lantern** takes the log lines every service emits, removes the credentials they carry, groups the
+occurrences into *issues*, and answers the one question an operator actually asks — "here is a
+request id off an error screen; what happened, and where is the trace?"
+
+**analytics** — absorbed in wave M1b of micro-deploy `docs/service-merge-plan.md` — takes signed
+product events off the bus, pseudonymises their subjects behind a pepper, and answers funnels,
+retention cohorts and daily series with a k-anonymity floor on every cell. Its source lives under
+[`src/analytics/`](src/analytics), its database is its own, and its pepper is reachable from that
+directory and nowhere else. See [Two modules, one process](#two-modules-one-process).
 
 Design authority: [`ecosystem/13-operational-model.md`](https://github.com/cloudsforge-online/micro-docs/blob/main/ecosystem/13-operational-model.md)
 
@@ -100,9 +107,45 @@ that the frozen service has **no credential scrubbing** — holds exactly: every
 is about NUL bytes, not secrets. The behaviour is correct; only the parenthetical is loose, so it is
 left in place and noted here rather than rewritten.
 
+## Two modules, one process
+
+Wave M1b folded `micro-analytics` into this repository. It is **not** a workspace package: the
+absorbed code is plain directories under `src/analytics/`, imported by relative path, because
+`org/.github/workflows/service-ci.yml` pins an allow-list of importable `@cloudsforge/*` names that
+contains runtime packages only, and adding a SERVICE to it would defeat the rule it enforces.
+
+| | what is shared | what is not |
+|---|---|---|
+| HTTP | one listener, one port, one `/livez`, `/readyz`, `/metrics` (lantern's) | two route tables, mounted in order; every analytics path is unchanged |
+| Database | nothing | `LANTERN_DATABASE_URL` and `ANALYTICS_DATABASE_URL`, read unchanged, never merged |
+| Readiness | one `Lifecycle` | two hard probes, `postgres-lantern` and `postgres-analytics` — `/readyz` is 503 if **either** database is gone |
+| Metrics | one registry, one `/metrics` | every write goes through `metrics.withLabels({ module })`, so the two job planes are two series |
+| Jobs | nothing | two queues, two runners, two `jobs` tables; both stop claiming together when the pod drains |
+| Secrets | nothing | the pepper never leaves `src/analytics/` |
+
+**The privacy boundary is made of scope, not convention.** `ANALYTICS_PSEUDONYM_KEY` and the
+k-anonymity floor enter the process inside `src/analytics/module.ts` and are reachable from nothing
+above it: that factory returns routes, a probe, a scrape hook and a lifetime, and none of those
+names a secret. No lantern-side file imports past that seam, and `src/privacyboundary.test.ts`
+fails if one ever does — including the migrator, which reaches analytics' DSNs through
+`analyticsMigrationTargets()` rather than through its `env`.
+
+**Both migrators run in the one `pnpm migrate`**, sequentially, each under its own advisory lock and
+each writing its own database's `schema_migrations`. That table name is a literal inside
+`@cloudsforge/db`, so the migrator **refuses to start** if the two DSNs address the same host, port
+and database — see `src/migratortargets.ts`. It is not a theoretical guard: both modules declare a
+migration named `events` and one named `jobs`, and both create tables of those names with different
+columns.
+
+**`ANALYTICS_TOKEN` now opens nothing.** It gated exactly one thing — analytics' `/metrics` — and
+this process serves lantern's instead, because `x-lantern-token` is what Prometheus, the collector
+and every runbook already present. The variable stays required, because the standalone analytics
+service is deployed until cutover.
+
 ## What it talks to
 
-- **Postgres** — its own database (`LANTERN_DATABASE_URL`), and no other.
+- **Postgres** — two databases, `LANTERN_DATABASE_URL` and `ANALYTICS_DATABASE_URL`, and no others.
+  Neither module reads the other's.
 - **Identity** — JWKS verification for the operator read routes only; never dialled at boot, and
   its being down does not lock anyone out (that is what `LANTERN_TOKEN` is for).
 - **The OTel collector** — pushes logs in; not called back.
@@ -113,15 +156,24 @@ left in place and noted here rather than rewritten.
 ```sh
 pnpm install
 pnpm typecheck
-pnpm migrate        # one-shot, against LANTERN_DATABASE_URL — never run by the service
+pnpm migrate        # one-shot, BOTH databases — never run by the service
 pnpm start
 
-# tests (the database-backed suite runs only against a *_test database)
-LANTERN_TEST_DATABASE_URL=postgres://lantern:lantern@127.0.0.1:5432/lantern_test pnpm test
+# Tests. The database-backed suites run only against a *_test database, and this repository needs
+# TWO — one per module. They must be different databases: both modules own a table called `events`
+# and a table called `jobs`, so pointing them at one makes each suite truncate the other's rows.
+#
+#   both set    615 pass / 0 fail
+#   neither     294 pass / 0 fail  (the no-database tier)
+#   lantern only 367 pass / 0 fail — ten analytics suites SKIP, which CI treats as a failure
+LANTERN_TEST_DATABASE_URL=postgres://lantern:lantern@127.0.0.1:5432/lantern_test \
+ANALYTICS_TEST_DATABASE_URL=postgres://analytics:analytics@127.0.0.1:5432/analytics_test \
+  pnpm test
 ```
 
 Configuration is documented in `.env.example`; every value there is a `CHANGE_ME` placeholder, and
-`src/env.ts` refuses to boot on one.
+`src/env.ts` and `src/analytics/env.ts` each refuse to boot on one — so a merged pod refuses unless
+BOTH halves are configured, rather than serving half a telemetry plane.
 
 ---
 

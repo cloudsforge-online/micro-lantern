@@ -12,6 +12,23 @@
  * in-flight gauge and the duration histogram — which is exactly the code that is dangerous to
  * write twice (micro-deploy `docs/service-merge-plan.md`, wave M1).
  * ══════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * ── WAVE M1b: THIS IS NOW THE ONE KERNEL, AND IT GREW EXACTLY TWO THINGS ──────────────────────
+ *
+ * `src/analytics/` used to carry a `kernel.ts` of its own that agreed with this one line for line.
+ * It is deleted; both route tables mount here. Two differences had to be reconciled, and both are
+ * load-bearing rather than cosmetic:
+ *
+ *   1. **`TSql` is a type parameter.** lantern's routes read `@cloudsforge/db`'s minimal `Sql`;
+ *      analytics' reads `postgres`'s own handle, because its aggregates use tagged templates the
+ *      minimal interface does not publish. That was the only way the two contexts differed, so it
+ *      is a parameter rather than a winner picked and cast at every read.
+ *   2. **A route may name the SELECTOR its `ctx.sql` is resolved from** (`RouteSpec.sql`). This is
+ *      the one thing a merge genuinely could not do without. `ctx.sql` used to come from the
+ *      kernel's single `deps.sql`; in a two-module process that would hand analytics' handlers
+ *      **lantern's database** — a query that succeeds, returns nothing, and says nothing. Which
+ *      database a route reads is now a property of the route declaration, resolved once at the
+ *      edge of the request exactly where the network is.
  */
 
 import {
@@ -42,7 +59,7 @@ export interface Reply {
   readonly headers?: Record<string, string>
 }
 
-export interface RequestContext {
+export interface RequestContext<TSql = Sql> {
   readonly req: IncomingMessage
   readonly url: URL
   readonly requestId: string
@@ -61,8 +78,13 @@ export interface RequestContext {
    * Every route uses this rather than reaching for the process-wide handle, because a wrong handle
    * is not an error — it is a query that SUCCEEDS against the other estate's rows and says nothing.
    * `deps.sql` is a `NetworkSql` with no query methods, so the mistake does not compile.
+   *
+   * Resolved from the selector the route named (`RouteSpec.sql`), or the kernel's own when it
+   * named none. In this process that means lantern's routes get lantern's database and analytics'
+   * routes get analytics', with the same "a wrong handle is silent" argument now applying across
+   * modules as well as across networks.
    */
-  readonly sql: Sql
+  readonly sql: TSql
 }
 
 /**
@@ -87,10 +109,11 @@ export const OPERATIONAL_ROUTES: ReadonlySet<string> = new Set(['/livez', '/read
  * convention instead of a scope. Closing over deps at construction time makes it a scope.
  * ══════════════════════════════════════════════════════════════════════════════════════════════
  */
-export interface RouteSpec {
+export interface RouteSpec<TSql = Sql> {
   readonly method: string
+  /** `/funnels/:id`. Used verbatim as the metric label, so cardinality is bounded. */
   readonly path: string
-  readonly handle: (ctx: RequestContext) => Promise<Reply>
+  readonly handle: (ctx: RequestContext<TSql>) => Promise<Reply>
   /**
    * This spec answers only when NOTHING else matched, and it is never matched by path.
    *
@@ -102,14 +125,33 @@ export interface RouteSpec {
    * The FIRST fallback in the list wins; mount exactly one.
    */
   readonly fallback?: true
+  /**
+   * The per-network SELECTOR this route's `ctx.sql` is resolved from.
+   *
+   * ════════════════════════════════════════════════════════════════════════════════════════════
+   * **OMITTED MEANS "THE KERNEL'S OWN", WHICH IS EVERY ROUTE IN A ONE-MODULE PROCESS.** It is set
+   * by a module whose routes are mounted BESIDE another module's, and it is the difference between
+   * a merge that works and a merge that is a silent data fault.
+   *
+   * `mountRoutes` resolves one handle per request, from one selector. Merge two services into one
+   * process without this and the second module's handlers are handed the FIRST module's database:
+   * `select … from events` then reads lantern's `events` table instead of analytics', succeeds,
+   * returns rows of a different shape or none at all, and reports nothing. It is the same class of
+   * failure as answering a testnet request out of mainnet — a query that succeeds and says nothing
+   * — which is why the answer is the same one: name the selector, resolve it at the edge, and
+   * refuse loudly when the deployment holds no handle.
+   * ════════════════════════════════════════════════════════════════════════════════════════════
+   */
+  readonly sql?: NetworkSql
 }
 
 /** A `RouteSpec` with its path compiled. Built by `mountRoutes`, never by a route module. */
-export interface Route {
+export interface Route<TSql = Sql> {
   readonly method: string
   readonly path: string
   readonly pattern: RegExp
-  readonly handle: (ctx: RequestContext) => Promise<Reply>
+  readonly handle: (ctx: RequestContext<TSql>) => Promise<Reply>
+  readonly sql?: NetworkSql
 }
 
 export function compile(path: string): RegExp {
@@ -153,15 +195,21 @@ export interface MountDeps {
  * network attribution, the per-request database handle, the in-flight gauge and the two HTTP
  * metrics. A route module supplies specs and never sees any of it.
  */
-export function mountRoutes(specs: readonly RouteSpec[], deps: MountDeps): Server {
-  const routes: Route[] = []
-  let fallback: RouteSpec | undefined
+export function mountRoutes<TSql>(specs: readonly RouteSpec<TSql>[], deps: MountDeps): Server {
+  const routes: Route<TSql>[] = []
+  let fallback: RouteSpec<TSql> | undefined
   for (const spec of specs) {
     if (spec.fallback) {
       fallback ??= spec
       continue
     }
-    routes.push({ method: spec.method, path: spec.path, pattern: compile(spec.path), handle: spec.handle })
+    routes.push({
+      method: spec.method,
+      path: spec.path,
+      pattern: compile(spec.path),
+      handle: spec.handle,
+      ...(spec.sql ? { sql: spec.sql } : {}),
+    })
   }
   let inFlight = 0
 
@@ -174,7 +222,7 @@ export function mountRoutes(specs: readonly RouteSpec[], deps: MountDeps): Serve
     const url = new URL(req.url ?? '/', `http://${headerOf(req, 'host') ?? 'localhost'}`)
     const method = req.method ?? 'GET'
 
-    let matched: Route | undefined
+    let matched: Route<TSql> | undefined
     let params: Record<string, string> = {}
     for (const route of routes) {
       if (route.method !== method) continue
@@ -218,11 +266,16 @@ export function mountRoutes(specs: readonly RouteSpec[], deps: MountDeps): Serve
     //
     // The operational endpoints are exempt because kubelet and Prometheus do not come through the
     // gateway and never send the header. Refusing them makes the pod never become ready.
+    // WHICH DATABASE, alongside WHICH NETWORK. A route mounted by another module names its own
+    // selector; everything else takes the kernel's. Read here, before either resolution, so the
+    // two answers come from one place and cannot disagree.
+    const selector = matched?.sql ?? deps.sql
+
     const networkless = matched !== undefined && OPERATIONAL_ROUTES.has(matched.path)
     let network: Network
     try {
       network = networkless
-        ? (deps.singleNetwork ?? deps.sql.networks[0] ?? 'mainnet')
+        ? (deps.singleNetwork ?? selector.networks[0] ?? 'mainnet')
         : requestNetwork(req.headers, deps.singleNetwork ? { fallback: deps.singleNetwork } : {})
     } catch (err) {
       log.error('request carries no usable network', {
@@ -247,9 +300,12 @@ export function mountRoutes(specs: readonly RouteSpec[], deps: MountDeps): Serve
     // past a `.catch` that is not attached yet, and the listener returns having sent NOTHING. The
     // connection then hangs until the client gives up: the one path the design most depends on
     // being loud was the one path that was silent.
-    let sql: ReturnType<typeof deps.sql.for>
+    let sql: TSql
     try {
-      sql = deps.sql.for(network)
+      // The one cast in this file. `Sql` and `postgres`'s handle are two published views of the
+      // same object — `networkSql` is built over the driver's clients — so `TSql` names which view
+      // the mounted module reads through, never a different value.
+      sql = selector.for(network) as unknown as TSql
     } catch (err) {
       log.error('no usable database handle for this request', { err, network })
       send(
@@ -279,9 +335,9 @@ export function mountRoutes(specs: readonly RouteSpec[], deps: MountDeps): Serve
  * `async` rather than a bare call so a handler that throws SYNCHRONOUSLY becomes a rejected promise
  * the `.catch` above is already attached to, rather than a throw escaping the `void` expression.
  */
-async function answer(
-  route: { readonly handle: (ctx: RequestContext) => Promise<Reply> } | undefined,
-  ctx: RequestContext,
+async function answer<TSql>(
+  route: { readonly handle: (ctx: RequestContext<TSql>) => Promise<Reply> } | undefined,
+  ctx: RequestContext<TSql>,
 ): Promise<Reply> {
   if (!route) {
     return errorReply(404, 'not_found', `no route for ${ctx.req.method} ${ctx.url.pathname}`, ctx.requestId)
@@ -307,9 +363,9 @@ async function answer(
  * Gated on the origin allowlist, so this explains things to a misconfigured frontend without
  * describing the surface to anyone else.
  */
-export function readableByBrowser(
+export function readableByBrowser<TSql>(
   reply: Reply,
-  ctx: RequestContext,
+  ctx: RequestContext<TSql>,
   deps: { readonly rumOrigins: readonly string[] },
 ): Reply {
   if (!ctx.url.pathname.startsWith('/ingest/')) return reply

@@ -2,7 +2,7 @@
   "name": "@cloudsforge/lantern",
   "version": "2026.8.100",
   "private": true,
-  "description": "The error-tracking plane. OTLP/HTTP log ingest decoded by hand at the hostile-input boundary, credentials scrubbed before persistence, occurrences grouped into issues by a normaliser that does not explode into one group per line, a browser RUM sink that holds no user_id by policy, retention and hourly rollups on a leased schedule, and an authenticated Prometheus surface. Supersedes the frozen stack/infra/lantern, whose ingest is open, unscrubbed, and scheduled by setInterval.",
+  "description": "The telemetry plane, in one process. LANTERN: OTLP/HTTP log ingest decoded by hand at the hostile-input boundary, credentials scrubbed before persistence, occurrences grouped into issues by a normaliser that does not explode into one group per line, a browser RUM sink that holds no user_id by policy. ANALYTICS (absorbed in wave M1b): signed event-bus ingest, pseudonymised subjects behind a pepper no lantern handler can name, a k-anonymity floor on every aggregate, funnels and retention cohorts. Two databases, two migrators, two module-labelled job queues, one listener and one authenticated Prometheus surface.",
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@11.9.0",
@@ -14,7 +14,7 @@
     "migrate": "node --import tsx src/migrator.ts",
     "typecheck": "tsc --noEmit",
     "_test": "--test-concurrency=1 is required, not a preference: every database test file truncates this service's tables between cases, and node:test runs FILES in parallel by default. A TRUNCATE takes an AccessExclusiveLock, so one file's reset deadlocks against another file's inserts (40P01). Cases within a file already run in order.",
-    "test": "node --import tsx --test --test-concurrency=1 src/*.test.ts",
+    "test": "node --import tsx --test --test-concurrency=1 src/*.test.ts src/analytics/*.test.ts",
     "build": "tsc -p tsconfig.build.json",
     "check": "pnpm typecheck && pnpm test"
   },
@@ -32,6 +32,7 @@
   ],
   "dependencies": {
     "@cloudsforge/auth": "link:../runtime/packages/auth",
+    "@cloudsforge/contracts-events": "link:../contracts/packages/events",
     "@cloudsforge/db": "link:../runtime/packages/db",
     "@cloudsforge/http": "link:../runtime/packages/http",
     "@cloudsforge/jobs": "link:../runtime/packages/jobs",
