@@ -1,6 +1,6 @@
 {
   "name": "@cloudsforge/lantern",
-  "version": "2026.8.100",
+  "version": "2026.8.101",
   "private": true,
   "description": "The telemetry plane, in one process. LANTERN: OTLP/HTTP log ingest decoded by hand at the hostile-input boundary, credentials scrubbed before persistence, occurrences grouped into issues by a normaliser that does not explode into one group per line, a browser RUM sink that holds no user_id by policy. ANALYTICS (absorbed in wave M1b): signed event-bus ingest, pseudonymised subjects behind a pepper no lantern handler can name, a k-anonymity floor on every aggregate, funnels and retention cohorts. Two databases, two migrators, two module-labelled job queues, one listener and one authenticated Prometheus surface.",
   "license": "MIT",
