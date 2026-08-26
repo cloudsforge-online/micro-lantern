@@ -5,11 +5,32 @@ name: CI
 # If this repository ever needs a job of its own, that is the signal the reusable workflow needs an
 # input, not that this repository needs a fork of it.
 #
-# `service-ci.yml` typechecks, runs the suite against a real Postgres `ci_test` container, and FAILS
-# the build if the database-backed suite skipped — which is why `src/testsupport.ts` reads
+# `service-ci.yml` typechecks, runs the suite against a real Postgres, and FAILS the build if the
+# database-backed suite skipped — which is why `src/testsupport.ts` reads
 # `LANTERN_TEST_DATABASE_URL` spelled exactly as the workflow exports it. It also enforces the estate
 # rules (one database, no cross-service imports, the three health endpoints, no unleased timers) that
 # repository walls used to enforce for free.
+#
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+# WAVE M1b: THIS REPOSITORY OWNS TWO DATABASES, AND SAYING SO IS NOT COSMETIC.
+#
+# `database-env-var` is a LIST since micro-org#519. Every name in it gets its own CI database, its
+# own exported pair, and — the part that matters — is treated as OWN by the skip scan.
+#
+# Declaring only `LANTERN_DATABASE_URL` here would not have been red. It would have been GREEN with
+# ten analytics suites silently skipped: `idempotency`, `ingest`, `jobs`, `metric definitions`,
+# `migrations`, `pseudonym`, `reads`, `rotating the pepper`, analytics' `the HTTP surface`, and
+# `the merged surface`. Measured on this branch — with only the lantern DSN exported the suite
+# reports **367 pass / 0 fail** instead of 615, and every one of those ten prints
+# `set ANALYTICS_TEST_DATABASE_URL`. The OLD skip scan read a foreign variable name as "a
+# cross-service tier stood down" and emitted a notice; with `ANALYTICS_DATABASE_URL` declared here,
+# the same lines are the disaster the block exists for and the build fails.
+#
+# The two databases must also be SEPARATE, which the shared workflow now does per declared name.
+# Both modules own a table called `events` and a table called `jobs` (`migratortargets.test.ts`
+# measures it), so one shared database would have one suite truncating the other's rows mid-test —
+# a flake, not a legible configuration error.
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
 
 on:
   push:
@@ -25,7 +46,9 @@ jobs:
     uses: cloudsforge-online/micro-org/.github/workflows/service-ci.yml@main
     with:
       service: lantern
-      database-env-var: LANTERN_DATABASE_URL
+      # Both, whitespace-separated. See the block at the top of this file for what declaring only
+      # the first would have cost, measured rather than guessed.
+      database-env-var: LANTERN_DATABASE_URL ANALYTICS_DATABASE_URL
       port: 4010
       # The image startup smoke test boots the real service, and `env.ts` validates its
       # configuration at import — so the container needs the variables it declares, not just a
@@ -42,8 +65,20 @@ jobs:
       # defect. CI does not need a WEAK secret, it needs A secret — nothing in the smoke test
       # verifies a signature — so it generates a real one per run rather than committing a
       # high-entropy literal that a future reader could mistake for a key.
+      #
+      # THE ANALYTICS HALF'S THREE VARIABLES ARE HERE FOR THE SAME REASON. Since wave M1b this image
+      # boots `src/analytics/module.ts`, which imports its own `env.ts` — so the merged container
+      # exits before it binds a socket unless the analytics configuration is present too. All three
+      # are `@generate`: a REAL `ANALYTICS_PSEUDONYM_KEY` must never appear in a workflow file, an
+      # image layer, or anywhere a repository read grants access to, and a placeholder is exactly
+      # what @cloudsforge/secrets refuses. Nothing is ingested during the smoke test, so the pepper
+      # pseudonymises nothing either way — generating one per run is honest in a way a literal
+      # never was.
       smoke-env: |
         LANTERN_TOKEN=@generate
+        ANALYTICS_PSEUDONYM_KEY=@generate
+        ANALYTICS_TOKEN=@generate
+        ANALYTICS_DELIVERY_SECRETS=@generate
         IDENTITY_JWKS_URL=http://127.0.0.1:4001/.well-known/jwks.json
         IDENTITY_ISSUER=http://127.0.0.1:4001
     secrets:
