@@ -1,5 +1,29 @@
 # lantern
 
+<!-- absorbed-banner -->
+> ## ⚠️ This code no longer deploys as a service. It runs inside `micro-agora`.
+>
+> Absorbed in wave **M5c**, release **2026.8.106** (2026-08-30) of the estate's service-merge sequence.
+>
+> **The canonical source is [`micro-agora`](https://github.com/cloudsforge-online/micro-agora)
+> at [`src/lantern/`](https://github.com/cloudsforge-online/micro-agora/tree/main/src/lantern).
+> Edit there.** What is in this repository is the copy the merge was made from: it is frozen, no
+> image is published from it, `cfctl bump` skips it, and nothing in the estate runs it.
+>
+> **Why the repository still exists.** Its registry row survives as `absorbed(…)`, which is what
+> keeps the Kubernetes `Service` of this name resolving — an `ExternalName` alias to `agora`, so
+> every caller that addresses it by service name still reaches the code. `deployableRepos()` keeps
+> the row and `releasableRepos()` drops it. The history here is also the history of the module.
+>
+> **What did not change**, and this is the point of the merge rather than an aside: the database is
+> still its own, the routes are unchanged except where a collision forced a remount, the migrations
+> still run under this module's name, and the trust boundary is unchanged. A merge moved a process
+> boundary, not a responsibility.
+>
+> Everything below describes the domain, and remains accurate. Read the reasoning — including what
+> was refused and why — in
+> [`micro-deploy/docs/service-merge-plan.md`](https://github.com/cloudsforge-online/micro-deploy/blob/main/docs/service-merge-plan.md).
+
 The estate's **telemetry plane**, in one process and two modules.
 
 **lantern** takes the log lines every service emits, removes the credentials they carry, groups the
